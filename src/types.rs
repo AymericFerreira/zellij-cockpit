@@ -2,38 +2,48 @@
 //!
 //! The helper prints one `Metrics` line; the plugin deserializes it and renders.
 //! Keep these types free of native-only dependencies (no chrono, etc.) so they
-//! compile for the WASM target too.
+//! compile for the WASM target too. `#[serde(default)]` lets the plugin tolerate
+//! a helper built at a different version (missing fields fall back to defaults).
 
 use serde::{Deserialize, Serialize};
 
 /// One snapshot of everything the bar displays.
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(default)]
 pub struct Metrics {
     /// Overall CPU utilization, 0..100.
     pub cpu: f32,
-    /// Used memory in bytes (total - available).
+    /// Used memory in bytes.
     pub mem_used: u64,
     /// Total memory in bytes.
     pub mem_total: u64,
-    /// Claude Code usage derived from `~/.claude` logs.
-    pub claude: ClaudeUsage,
+    /// Claude Code usage (from `~/.claude`).
+    pub claude: ProviderUsage,
+    /// Codex CLI usage (from `~/.codex`).
+    pub codex: ProviderUsage,
 }
 
-/// Claude Code spend, both for the calendar day and the active 5-hour window.
+/// Per-coding-agent usage: calendar-day totals plus the active rate-limit window.
+/// Shared shape for Claude and Codex (and any future provider).
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
-pub struct ClaudeUsage {
-    /// Total cost (USD) across all projects since local midnight.
+#[serde(default)]
+pub struct ProviderUsage {
+    /// Whether any usage was found at all (controls whether the bar shows it).
+    pub present: bool,
+    /// Total cost (USD) since local midnight.
     pub today_cost: f64,
-    /// Total tokens (input + output + cache) since local midnight.
+    /// Total tokens since local midnight.
     pub today_tokens: u64,
-    /// Whether there is an open 5-hour rate-limit block right now.
+    /// Whether there is an open rate-limit window right now.
     pub block_active: bool,
-    /// Cost (USD) accrued in the active block.
+    /// Cost (USD) accrued in the active window.
     pub block_cost: f64,
-    /// Tokens accrued in the active block.
+    /// Tokens accrued in the active window.
     pub block_tokens: u64,
-    /// Fraction (0..1) of the 5-hour window that has elapsed.
+    /// Fraction (0..1) of the window that has elapsed.
     pub block_elapsed_frac: f64,
-    /// Token burn rate in the active block, tokens/minute.
+    /// Minutes remaining until the active window resets.
+    pub block_remaining_min: f64,
+    /// Token burn rate in the active window, tokens/minute.
     pub block_burn_per_min: f64,
 }

@@ -1,8 +1,8 @@
-// zellij-cockpit replaces the top tab-bar row with the cockpit plugin.
+// zellij-cockpit: top-row cockpit (tabs + attention + system + Claude usage),
+// with zellij's built-in status bar (keybinding hints) kept at the bottom.
 //
 // Add this `default_tab_template` block to your zellij config or a layout file
-// (e.g. ~/.config/zellij/config.kdl, or ~/.config/zellij/layouts/cockpit.kdl).
-// `children` is where your panes go; the cockpit occupies the single top row.
+// (e.g. ~/.config/zellij/layouts/cockpit.kdl). `children` is where your panes go.
 
 default_tab_template {
     pane size=1 borderless=true {
@@ -10,7 +10,13 @@ default_tab_template {
             // Optional config:
             // interval "3"   // seconds between metric refreshes
             // helper "$HOME/.config/zellij/plugins/cockpit-helper"
+            // claude "true"  // show Claude usage (default true)
+            // codex  "true"  // show Codex usage (default true; appears once ~/.codex has logs)
         }
     }
     children
+    // size=1 shows only the shortcut line (drops the rotating "Tip:" line).
+    pane size=1 borderless=true {
+        plugin location="status-bar"
+    }
 }

@@ -1,12 +1,12 @@
 # zellij-cockpit
 
-An all-in-one [Zellij](https://zellij.dev) **top bar**: live system load, Claude Code
-usage, and per-tab attention icons — all in the single tab-bar row, so it costs no
-extra vertical space.
+An all-in-one [Zellij](https://zellij.dev) **top bar**: live system load, coding-agent
+usage (Claude Code and/or Codex CLI), and per-tab attention icons — in the single
+tab-bar row, so it costs no extra vertical space.
 
 ```
- 1 edit ●  2 build ◐  3 logs ✓     CPU 12%  MEM 9.4/16G  Claude $4.21·312k  5h ▓▓▓░░ 38%
- └──────── tabs + attention ───────┘   └─────────── system + Claude usage ───────────┘
+ 1 edit ●  2 build ◐  3 logs ✓   CPU 12%  MEM 9.4/16G  Claude $4.21·312k  5h ▓▓▓░░ 2h09m left  Codex $0.01·27k  5h ▓░░░ 3h25m left
+ └──────── tabs + attention ──────┘   └────────────────────── system + per-agent usage ──────────────────────┘
   legend:  ● needs you    ◐ working    ✓ done    (no icon = idle)
 ```
 
@@ -18,11 +18,14 @@ extra vertical space.
   - `✓` done — Claude finished
   - the icon clears when you focus the tab
 - **CPU %** and **Memory** (used/total), color-coded by load
-- **Claude today** — total cost ($) and tokens across all projects since local midnight
-- **Claude 5-hour block** — how far through the active rate-limit window you are
+- **Per coding agent** (Claude and Codex, each toggleable — see Config):
+  - **today** — total cost ($) and tokens since local midnight
+  - **window** — a bar plus time until the rate-limit window resets. For Codex this uses its
+    real `rate_limits` (actual % used + exact reset); for Claude it's the 5-hour rolling block.
 
-When the terminal is narrow, the right-hand metrics drop one at a time (5h → Claude → MEM → CPU)
-so the tabs always stay visible.
+A provider is shown only when it's enabled *and* has data, so you get Claude-only, Codex-only,
+or both. When the terminal is narrow, the right-hand segments drop one at a time so the tabs
+always stay visible.
 
 ## How it works
 
@@ -36,9 +39,13 @@ No long-running daemon and no lock files. Two pieces:
    pipe      ←  │ "cockpit::attention::<state>::<pane>" ← from Claude Code hooks
 ```
 
-- **`cockpit-helper`** (native binary) reads CPU/MEM via `sysinfo` and computes Claude
-  cost/tokens by scanning `~/.claude/projects/**/*.jsonl` against a built-in price table.
-  It's short-lived — the plugin runs it on a timer. The Claude scan is cached for ~30s.
+- **`cockpit-helper`** (native binary) reads CPU/MEM via `sysinfo` and computes per-agent
+  usage by scanning each agent's local logs against a built-in price table:
+  - Claude — `~/.claude/projects/**/*.jsonl`
+  - Codex — `~/.codex/sessions/**/rollout-*.jsonl` (also reads Codex's real `rate_limits`)
+
+  It's short-lived — the plugin runs it on a timer; the log scans are cached for ~30s.
+  The today/window aggregation is shared (`src/usage.rs`); each agent just parses its own logs.
 - **`zellij-cockpit.wasm`** (the plugin) renders the row, polls the helper, and listens for
   attention pipes sent by Claude Code hooks.
 
@@ -68,15 +75,21 @@ helper can't run.
 
 Optional keys in the plugin block (see `assets/layout.kdl`):
 
-| Key        | Default                                          | Meaning                          |
-|------------|--------------------------------------------------|----------------------------------|
-| `interval` | `3`                                              | seconds between metric refreshes |
-| `helper`   | `$HOME/.config/zellij/plugins/cockpit-helper`    | path to the helper binary        |
+| Key        | Default                                          | Meaning                              |
+|------------|--------------------------------------------------|--------------------------------------|
+| `interval` | `3`                                              | seconds between metric refreshes     |
+| `helper`   | `$HOME/.config/zellij/plugins/cockpit-helper`    | path to the helper binary            |
+| `claude`   | `true`                                           | show Claude usage                    |
+| `codex`    | `true`                                           | show Codex usage (when `~/.codex` has logs) |
+
+The layout also keeps zellij's built-in `status-bar` (keybinding hints) at the bottom — see
+[`assets/layout.kdl`](assets/layout.kdl).
 
 ## Pricing
 
-Model prices live in [`src/claude/pricing.rs`](src/claude/pricing.rs) (USD per 1M tokens, with
-the cache-write ×1.25 / cache-read ×0.1 multipliers). Update them there when prices change.
+Model prices live in the per-agent `pricing.rs` files
+([`src/claude/pricing.rs`](src/claude/pricing.rs), [`src/codex/pricing.rs`](src/codex/pricing.rs)),
+in USD per 1M tokens with cache multipliers. Update them there when prices change.
 
 ## Troubleshooting
 

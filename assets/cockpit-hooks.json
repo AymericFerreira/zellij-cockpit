@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v zellij >/dev/null && [ -n \"$ZELLIJ_PANE_ID\" ] && zellij pipe --name \"cockpit::attention::working::$ZELLIJ_PANE_ID\" >/dev/null 2>&1 || true"
+            "command": "[ -n \"$ZELLIJ_PANE_ID\" ] && command -v zellij >/dev/null 2>&1 && ( zellij pipe --name \"cockpit::attention::working::$ZELLIJ_PANE_ID\" >/dev/null 2>&1 & ) ; true"
           }
         ]
       }
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v zellij >/dev/null && [ -n \"$ZELLIJ_PANE_ID\" ] && zellij pipe --name \"cockpit::attention::waiting::$ZELLIJ_PANE_ID\" >/dev/null 2>&1 || true"
+            "command": "[ -n \"$ZELLIJ_PANE_ID\" ] && command -v zellij >/dev/null 2>&1 && ( zellij pipe --name \"cockpit::attention::waiting::$ZELLIJ_PANE_ID\" >/dev/null 2>&1 & ) ; true"
           }
         ]
       }
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v zellij >/dev/null && [ -n \"$ZELLIJ_PANE_ID\" ] && zellij pipe --name \"cockpit::attention::done::$ZELLIJ_PANE_ID\" >/dev/null 2>&1 || true"
+            "command": "[ -n \"$ZELLIJ_PANE_ID\" ] && command -v zellij >/dev/null 2>&1 && ( zellij pipe --name \"cockpit::attention::done::$ZELLIJ_PANE_ID\" >/dev/null 2>&1 & ) ; true"
           }
         ]
       }

@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use colored::Colorize;
 use zellij_tile::prelude::*;
 
-use zellij_cockpit::types::Metrics;
+use zellij_cockpit::types::{Metrics, ProviderUsage};
 
 /// Per-tab attention state, set by Claude Code hooks.
 #[derive(Clone, Copy)]
@@ -55,6 +55,9 @@ struct State {
     /// sh -c argument that runs the helper; default resolves $HOME at runtime.
     helper_cmd: String,
     got_perms: bool,
+    /// Which providers' usage to display (config: `claude` / `codex`).
+    show_claude: bool,
+    show_codex: bool,
 }
 
 register_plugin!(State);
@@ -74,7 +77,24 @@ impl ZellijPlugin for State {
             .unwrap_or_else(|| "$HOME/.config/zellij/plugins/cockpit-helper".to_string());
         self.helper_cmd = format!("exec \"{helper_path}\"");
 
-        request_permission(&[PermissionType::RunCommands]);
+        // Per-provider toggles (default on). Set `claude false` / `codex false`
+        // in the plugin's KDL config to hide one.
+        let flag = |key: &str| {
+            configuration
+                .get(key)
+                .map(|s| s.parse().unwrap_or(true))
+                .unwrap_or(true)
+        };
+        self.show_claude = flag("claude");
+        self.show_codex = flag("codex");
+
+        // RunCommands: spawn the helper. ReadApplicationState: receive
+        // TabUpdate/PaneUpdate (without it we never learn the tabs or which
+        // pane is in which tab, so tab names and attention mapping break).
+        request_permission(&[
+            PermissionType::RunCommands,
+            PermissionType::ReadApplicationState,
+        ]);
         subscribe(&[
             EventType::PermissionRequestResult,
             EventType::Timer,
@@ -82,13 +102,18 @@ impl ZellijPlugin for State {
             EventType::TabUpdate,
             EventType::PaneUpdate,
         ]);
-        set_selectable(false);
+        // NOTE: do not call set_selectable(false) here. The permission prompt is
+        // answered by focusing this pane and pressing `y`; a non-selectable pane
+        // can't be focused. We mark it non-selectable only after the grant.
     }
 
     fn update(&mut self, event: Event) -> bool {
         match event {
             Event::PermissionRequestResult(_) => {
                 self.got_perms = true;
+                // Now that the grant is handled, drop out of the focus rotation
+                // so the 1-row bar doesn't steal focus during normal use.
+                set_selectable(false);
                 self.fetch();
                 set_timeout(self.interval);
                 false
@@ -196,27 +221,30 @@ impl State {
         if !self.got_perms {
             return;
         }
-        run_command(&["sh", "-c", &self.helper_cmd], BTreeMap::new());
+        // Use an absolute interpreter path: zellij spawns the command with
+        // tokio::process::Command::new(argv[0]), and a bare "sh" can ENOENT
+        // depending on how zellij itself was launched. $HOME is inherited from
+        // the zellij server's env, so it still expands inside the shell.
+        run_command(&["/bin/sh", "-c", &self.helper_cmd], BTreeMap::new());
     }
 
     fn render_tabs(&self) -> String {
-        let parts: Vec<String> = self
-            .tabs
-            .iter()
-            .map(|tab| {
-                let label = format!("{} {}", tab.position + 1, tab.name);
-                let styled = if tab.active {
-                    format!("{}", label.bold().bright_green())
-                } else {
-                    format!("{}", label.bright_black())
-                };
-                match self.attention.get(&tab.position) {
-                    Some(a) => format!("{styled} {}", a.glyph()),
-                    None => styled,
-                }
-            })
-            .collect();
-        parts.join("  ")
+        let mut parts: Vec<String> = Vec::new();
+        for tab in &self.tabs {
+            if tab.active {
+                // Active tab: a clear highlighted chip. Attention is auto-cleared
+                // on the focused tab, so the active tab never carries an icon.
+                parts.push(format!(
+                    "{}",
+                    format!(" {} ", tab.name).black().on_green().bold()
+                ));
+            } else if let Some(a) = self.attention.get(&tab.position) {
+                parts.push(format!(" {} {} ", tab.name.bold(), a.glyph()));
+            } else {
+                parts.push(format!(" {} ", tab.name.bold()));
+            }
+        }
+        parts.join("")
     }
 
     fn metric_segments(&self) -> Vec<String> {
@@ -245,28 +273,45 @@ impl State {
             usage_color(format!("{used_g:.1}/{total_g:.0}G"), mem_pct, 60.0, 80.0)
         ));
 
-        // Claude today
-        let c = &m.claude;
-        segs.push(format!(
-            "{} {} · {}",
-            "Claude".bright_black(),
-            format!("${:.2}", c.today_cost).bright_green(),
-            human_tokens(c.today_tokens)
-        ));
-
-        // 5-hour block
-        if c.block_active {
-            let pct = c.block_elapsed_frac * 100.0;
-            segs.push(format!(
-                "{} {} {:.0}%",
-                "5h".bright_black(),
-                usage_color(bar5(c.block_elapsed_frac), pct, 60.0, 85.0),
-                pct
-            ));
+        // Per-provider usage (each only if enabled and it actually has data).
+        if self.show_claude {
+            segs.extend(provider_segments("Claude", &m.claude));
+        }
+        if self.show_codex {
+            segs.extend(provider_segments("Codex", &m.codex));
         }
 
         segs
     }
+}
+
+/// Build the segments for one provider: `<label> $cost · tokens` and, if a
+/// window is active, `5h <bar> <time> left`.
+fn provider_segments(label: &str, u: &ProviderUsage) -> Vec<String> {
+    let mut segs = Vec::new();
+    if !u.present {
+        return segs;
+    }
+
+    segs.push(format!(
+        "{} {} · {}",
+        label.bright_black(),
+        format!("${:.2}", u.today_cost).bright_green(),
+        human_tokens(u.today_tokens)
+    ));
+
+    // Bar shows elapsed; text shows time until the window resets.
+    if u.block_active {
+        let pct = u.block_elapsed_frac * 100.0;
+        segs.push(format!(
+            "{} {} {}",
+            "5h".bright_black(),
+            usage_color(bar5(u.block_elapsed_frac), pct, 60.0, 85.0),
+            format!("{} left", human_duration(u.block_remaining_min)).bright_black()
+        ));
+    }
+
+    segs
 }
 
 /// Count visible columns, skipping ANSI escape sequences (`\x1b[ … letter`).
@@ -285,6 +330,18 @@ fn visible_len(s: &str) -> usize {
         }
     }
     count
+}
+
+/// Format minutes as "Xh Ym" / "Ym" for the time-until-reset display.
+fn human_duration(minutes: f64) -> String {
+    let total = minutes.max(0.0).round() as u64;
+    let h = total / 60;
+    let m = total % 60;
+    if h > 0 {
+        format!("{h}h{m:02}m")
+    } else {
+        format!("{m}m")
+    }
 }
 
 fn human_tokens(n: u64) -> String {
