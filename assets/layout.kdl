@@ -1,0 +1,16 @@
+// zellij-cockpit replaces the top tab-bar row with the cockpit plugin.
+//
+// Add this `default_tab_template` block to your zellij config or a layout file
+// (e.g. ~/.config/zellij/config.kdl, or ~/.config/zellij/layouts/cockpit.kdl).
+// `children` is where your panes go; the cockpit occupies the single top row.
+
+default_tab_template {
+    pane size=1 borderless=true {
+        plugin location="file:~/.config/zellij/plugins/zellij-cockpit.wasm" {
+            // Optional config:
+            // interval "3"   // seconds between metric refreshes
+            // helper "$HOME/.config/zellij/plugins/cockpit-helper"
+        }
+    }
+    children
+}
