@@ -44,6 +44,4 @@ pub struct ProviderUsage {
     pub block_elapsed_frac: f64,
     /// Minutes remaining until the active window resets.
     pub block_remaining_min: f64,
-    /// Token burn rate in the active window, tokens/minute.
-    pub block_burn_per_min: f64,
 }

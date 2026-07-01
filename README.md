@@ -19,7 +19,7 @@ tab-bar row, so it costs no extra vertical space.
   - the icon clears when you focus the tab
 - **CPU %** and **Memory** (used/total), color-coded by load
 - **Per coding agent** (Claude and Codex, each toggleable — see Config):
-  - **today** — total cost ($) and tokens since local midnight
+  - **today** — estimated list-price cost ($) and tokens since local midnight
   - **window** — a bar plus time until the rate-limit window resets. For Codex this uses its
     real `rate_limits` (actual % used + exact reset); for Claude it's the 5-hour rolling block.
 
@@ -51,8 +51,9 @@ No long-running daemon and no lock files. Two pieces:
 
 ## Build & install
 
-Requires the Rust toolchain, the `wasm32-wasip1` target (`rustup target add wasm32-wasip1`),
-[`just`](https://github.com/casey/just), and Zellij.
+Requires Rust 1.85+ (edition 2024), the `wasm32-wasip1` target
+(`rustup target add wasm32-wasip1`), [`just`](https://github.com/casey/just),
+and Zellij.
 
 ```bash
 just install
@@ -68,8 +69,9 @@ This builds both binaries and copies them to `~/.config/zellij/plugins/`
    into `~/.claude/settings.json` (merge — don't overwrite any hooks you already have). The
    hooks fire `zellij pipe` on `UserPromptSubmit` / `Notification` / `Stop`.
 
-On first run, Zellij prompts to grant the plugin **RunCommands** permission — accept it, or the
-helper can't run.
+On first run, Zellij prompts to grant the plugin **RunCommands** and
+**ReadApplicationState** permissions — accept them, or the helper can't run and the
+plugin can't map panes to tabs for attention icons.
 
 ## Configuration
 
@@ -89,7 +91,10 @@ The layout also keeps zellij's built-in `status-bar` (keybinding hints) at the b
 
 Model prices live in the per-agent `pricing.rs` files
 ([`src/claude/pricing.rs`](src/claude/pricing.rs), [`src/codex/pricing.rs`](src/codex/pricing.rs)),
-in USD per 1M tokens with cache multipliers. Update them there when prices change.
+in USD per 1M tokens with cache multipliers. These are list-price estimates for
+display, not a billing authority; subscription plans, credits, regional pricing,
+fast modes, and provider price changes can make real account cost differ. Update
+them there when prices change.
 
 ## Troubleshooting
 
@@ -98,7 +103,8 @@ in USD per 1M tokens with cache multipliers. Update them there when prices chang
 - **Attention icons never appear** — confirm the hooks are in `~/.claude/settings.json` and that
   `zellij` is on PATH inside Claude Code. Test manually:
   `zellij pipe --name "cockpit::attention::waiting::$ZELLIJ_PANE_ID"`.
-- **Permission errors** — reload the plugin and accept the RunCommands prompt.
+- **Permission errors** — reload the plugin and accept the RunCommands and
+  ReadApplicationState prompts.
 
 ## Background
 

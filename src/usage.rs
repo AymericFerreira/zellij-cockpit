@@ -1,4 +1,4 @@
-//! Provider-agnostic usage aggregation. Native-only.
+//! Provider-agnostic usage aggregation + log scanning. Native-only.
 //!
 //! Each provider (Claude, Codex, …) parses its own logs into `Entry` values
 //! (timestamp + tokens + already-priced cost). `summarize` then computes the
@@ -6,8 +6,13 @@
 //! them. The window length is a parameter so each provider can set its own.
 
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::BufReader;
+use std::path::{Path, PathBuf};
+use std::time::{Duration as StdDuration, SystemTime};
 
-use chrono::{DateTime, Duration as ChronoDuration, Local, Timelike};
+use chrono::{DateTime, Duration as ChronoDuration, Local};
+use walkdir::WalkDir;
 
 use crate::types::ProviderUsage;
 
@@ -20,11 +25,47 @@ pub struct Entry {
     pub dedup_key: Option<String>,
 }
 
+/// Walk `~/<subdir>/**` and hand each `*.jsonl` modified within `window` to
+/// `handle` (path + buffered reader). Shared by every provider's scanner.
+pub fn scan_recent_files<F>(subdir: &[&str], window: ChronoDuration, mut handle: F)
+where
+    F: FnMut(&Path, BufReader<File>),
+{
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return;
+    };
+    let mut root = home;
+    for part in subdir {
+        root = root.join(part);
+    }
+
+    let cutoff = SystemTime::now()
+        .checked_sub(StdDuration::from_secs(window.num_seconds().max(0) as u64))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+
+    for entry in WalkDir::new(&root).into_iter().filter_map(Result::ok) {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        if let Ok(meta) = entry.metadata() {
+            if let Ok(modified) = meta.modified() {
+                if modified < cutoff {
+                    continue;
+                }
+            }
+        }
+        if let Ok(file) = File::open(path) {
+            handle(path, BufReader::new(file));
+        }
+    }
+}
+
 /// Aggregate entries into today's totals and the active `window` block.
 ///
-/// Blocks are anchored at the hour of their first activity; a new block starts
-/// after a gap longer than `window` or once `window` has elapsed. The active
-/// block is the most recent one, if `now` still falls inside it.
+/// A block is anchored at its first entry's timestamp; a new block starts after
+/// a gap longer than `window` or once `window` has elapsed since the anchor. The
+/// active block is the most recent one, if `now` still falls inside it.
 pub fn summarize(
     mut entries: Vec<Entry>,
     now: DateTime<Local>,
@@ -62,7 +103,10 @@ pub fn summarize(
             _ => true,
         };
         if starts_new {
-            block_start = Some(floor_to_hour(e.timestamp));
+            // Anchor at the actual first-activity time (not floored to the hour),
+            // so an entry just under `window` old isn't wrongly split into a new
+            // block and a live window isn't dropped near the boundary.
+            block_start = Some(e.timestamp);
             block_tokens = 0;
             block_cost = 0.0;
         }
@@ -74,29 +118,16 @@ pub fn summarize(
     if let Some(bs) = block_start {
         if now >= bs && now - bs < window {
             let elapsed = now - bs;
-            let elapsed_min = elapsed.num_seconds() as f64 / 60.0;
             usage.block_active = true;
             usage.block_cost = block_cost;
             usage.block_tokens = block_tokens;
             usage.block_elapsed_frac =
                 (elapsed.num_seconds() as f64 / window.num_seconds() as f64).clamp(0.0, 1.0);
             usage.block_remaining_min = ((window - elapsed).num_seconds().max(0) as f64) / 60.0;
-            usage.block_burn_per_min = if elapsed_min > 0.0 {
-                block_tokens as f64 / elapsed_min
-            } else {
-                0.0
-            };
         }
     }
 
     usage
-}
-
-fn floor_to_hour(dt: DateTime<Local>) -> DateTime<Local> {
-    dt.with_minute(0)
-        .and_then(|d| d.with_second(0))
-        .and_then(|d| d.with_nanosecond(0))
-        .unwrap_or(dt)
 }
 
 #[cfg(test)]
@@ -143,5 +174,19 @@ mod tests {
         );
         assert!(u.present);
         assert!(!u.block_active);
+    }
+
+    #[test]
+    fn first_activity_anchor_keeps_a_4h_old_turn_in_the_active_window() {
+        // Two turns 4h01m apart with now just after; previously hour-flooring
+        // could split these and drop the older turn from the active block.
+        let now = Local::now();
+        let entries = vec![
+            e(now - ChronoDuration::minutes(241), 100, 1.0),
+            e(now - ChronoDuration::minutes(1), 200, 2.0),
+        ];
+        let u = summarize(entries, now, ChronoDuration::hours(5));
+        assert!(u.block_active);
+        assert_eq!(u.block_tokens, 300); // both turns counted
     }
 }

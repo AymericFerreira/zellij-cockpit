@@ -1,16 +1,12 @@
 //! Read and parse Claude Code JSONL transcripts into priced usage entries.
 
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
-use std::time::{Duration as StdDuration, SystemTime};
+use std::io::BufRead;
 
 use chrono::{DateTime, Duration as ChronoDuration, Local};
 use serde_json::Value;
-use walkdir::WalkDir;
 
 use crate::claude::pricing;
-use crate::usage::Entry;
+use crate::usage::{self, Entry};
 
 /// Token counts from one assistant turn's `message.usage`.
 #[derive(Debug, Default, Clone)]
@@ -33,36 +29,13 @@ impl Usage {
 /// Walk `~/.claude/projects` and parse every `*.jsonl` modified within `window`.
 pub fn scan_recent(window: ChronoDuration) -> Vec<Entry> {
     let mut out = Vec::new();
-
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-        return out;
-    };
-    let root = home.join(".claude").join("projects");
-
-    let cutoff = SystemTime::now()
-        .checked_sub(StdDuration::from_secs(window.num_seconds().max(0) as u64))
-        .unwrap_or(SystemTime::UNIX_EPOCH);
-
-    for entry in WalkDir::new(&root).into_iter().filter_map(Result::ok) {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        if let Ok(meta) = entry.metadata() {
-            if let Ok(modified) = meta.modified() {
-                if modified < cutoff {
-                    continue;
-                }
-            }
-        }
-        let Ok(file) = File::open(path) else { continue };
-        for line in BufReader::new(file).lines().map_while(Result::ok) {
+    usage::scan_recent_files(&[".claude", "projects"], window, |_path, reader| {
+        for line in reader.lines().map_while(Result::ok) {
             if let Some(e) = parse_line(&line) {
                 out.push(e);
             }
         }
-    }
-
+    });
     out
 }
 
