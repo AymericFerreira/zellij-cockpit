@@ -78,11 +78,17 @@ impl ZellijPlugin for State {
         self.helper_cmd = format!("exec \"{helper_path}\"");
 
         // Per-provider toggles (default on). Set `claude false` / `codex false`
-        // in the plugin's KDL config to hide one.
+        // in the plugin's KDL config to hide one. Only explicit false-y spellings
+        // hide a provider; anything else (or absent) stays on.
         let flag = |key: &str| {
             configuration
                 .get(key)
-                .map(|s| s.parse().unwrap_or(true))
+                .map(|s| {
+                    !matches!(
+                        s.trim().to_ascii_lowercase().as_str(),
+                        "false" | "0" | "no" | "off" | ""
+                    )
+                })
                 .unwrap_or(true)
         };
         self.show_claude = flag("claude");
@@ -109,7 +115,7 @@ impl ZellijPlugin for State {
 
     fn update(&mut self, event: Event) -> bool {
         match event {
-            Event::PermissionRequestResult(_) => {
+            Event::PermissionRequestResult(PermissionStatus::Granted) => {
                 self.got_perms = true;
                 // Now that the grant is handled, drop out of the focus rotation
                 // so the 1-row bar doesn't steal focus during normal use.
@@ -118,17 +124,22 @@ impl ZellijPlugin for State {
                 set_timeout(self.interval);
                 false
             }
+            Event::PermissionRequestResult(PermissionStatus::Denied) => {
+                self.got_perms = false;
+                set_selectable(false);
+                false
+            }
             Event::Timer(_) => {
                 self.fetch();
                 set_timeout(self.interval);
                 false
             }
             Event::RunCommandResult(_code, stdout, _stderr, _ctx) => {
-                if let Ok(text) = String::from_utf8(stdout) {
-                    if let Ok(metrics) = serde_json::from_str::<Metrics>(text.trim()) {
-                        self.metrics = metrics;
-                        return true;
-                    }
+                if let Ok(text) = String::from_utf8(stdout)
+                    && let Ok(metrics) = serde_json::from_str::<Metrics>(text.trim())
+                {
+                    self.metrics = metrics;
+                    return true;
                 }
                 false
             }
@@ -300,13 +311,16 @@ fn provider_segments(label: &str, u: &ProviderUsage) -> Vec<String> {
         human_tokens(u.today_tokens)
     ));
 
-    // Bar shows elapsed; text shows time until the window resets.
+    // Bar + percent show how full the window is (time elapsed for Claude, real
+    // quota used for Codex); the text shows time until it resets. The percent is
+    // color-coded so it's obvious when you're close to the limit (red ≥ 80%).
     if u.block_active {
         let pct = u.block_elapsed_frac * 100.0;
         segs.push(format!(
-            "{} {} {}",
+            "{} {} {} {}",
             "5h".bright_black(),
-            usage_color(bar5(u.block_elapsed_frac), pct, 60.0, 85.0),
+            usage_color(bar5(u.block_elapsed_frac), pct, 60.0, 80.0),
+            usage_color(format!("{pct:.0}%"), pct, 60.0, 80.0),
             format!("{} left", human_duration(u.block_remaining_min)).bright_black()
         ));
     }
@@ -357,9 +371,7 @@ fn human_tokens(n: u64) -> String {
 /// A 5-cell progress bar for a 0..1 fraction.
 fn bar5(frac: f64) -> String {
     let filled = (frac.clamp(0.0, 1.0) * 5.0).round() as usize;
-    (0..5)
-        .map(|i| if i < filled { '▓' } else { '░' })
-        .collect()
+    (0..5).map(|i| if i < filled { '▓' } else { '░' }).collect()
 }
 
 fn usage_color(text: String, pct: f64, warn: f64, crit: f64) -> colored::ColoredString {
