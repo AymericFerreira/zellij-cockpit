@@ -26,21 +26,28 @@ use zellij_cockpit::{claude, codex};
 const LOGS_TTL: i64 = 30;
 /// How long a successful live rate-limit read stays fresh.
 ///
-/// Deliberately slow. The endpoint is rate limited, and observed limits are both
-/// strict and slow to clear - a burst of requests locked us out for well over ten
-/// minutes. Quota also moves slowly, and the countdown to the reset stays exact
-/// between fetches because we cache the absolute reset time rather than a
-/// duration. So there is nothing to gain from polling hard and a working bar to
-/// lose. Five minutes is 12 requests an hour, however fast the bar ticks.
-const LIVE_TTL: i64 = 300;
-/// After a failed live read (offline, expired token, 429), wait at least this
-/// long before trying again, doubling per consecutive failure up to
-/// [`LIVE_BACKOFF_MAX`]. Retrying into a rate limit is how you stay rate limited.
+/// Deliberately slow. The endpoint rate limits hard: a mere handful of requests
+/// in a few minutes trips it, and it then stays tripped for a long time. Being
+/// locked out is worse than being slightly stale, because a lockout costs the
+/// percentage entirely and drops the bar back to the estimate.
+///
+/// There is also little to gain from polling fast. Quota moves slowly, and the
+/// countdown to the reset stays exact between fetches because we cache the
+/// absolute reset time rather than a duration. So a quota at most ten minutes old
+/// costs nothing real, and ten minutes is only six requests an hour however fast
+/// the bar ticks.
+const LIVE_TTL: i64 = 600;
+/// After a failed live read (offline, expired token), wait at least this long
+/// before retrying, doubling per consecutive failure up to [`LIVE_BACKOFF_MAX`].
 const LIVE_BACKOFF_BASE: i64 = 300;
 const LIVE_BACKOFF_MAX: i64 = 3600;
+/// A 429 is the server explicitly telling us to stop asking, so it gets a floor
+/// far above the ordinary backoff. Retrying into a rate limit is how you stay
+/// rate limited.
+const LIVE_BACKOFF_RATE_LIMITED: i64 = 1800;
 /// Never show a live window older than this: better an honest estimate than a
 /// stale quota presented as current.
-const LIVE_STALE: i64 = 1200;
+const LIVE_STALE: i64 = 1800;
 
 /// What we cache between ticks. System metrics are absent because they're cheap
 /// enough to compute fresh every time.
@@ -72,12 +79,17 @@ impl CachedUsage {
     }
 }
 
-/// Back off further with each consecutive failure, so a long rate-limit lockout
-/// or an offline laptop settles into hourly retries instead of grinding away.
-fn backoff_secs(failures: u32) -> i64 {
-    LIVE_BACKOFF_BASE
+/// Back off further with each consecutive failure, so an offline laptop settles
+/// into hourly retries instead of grinding away - and start far out on a 429,
+/// which is the server telling us in as many words to stop.
+fn backoff_secs(failures: u32, err: claude::live::FetchError) -> i64 {
+    let backoff = LIVE_BACKOFF_BASE
         .saturating_mul(1i64 << failures.min(8))
-        .min(LIVE_BACKOFF_MAX)
+        .min(LIVE_BACKOFF_MAX);
+    match err {
+        claude::live::FetchError::RateLimited => backoff.max(LIVE_BACKOFF_RATE_LIMITED),
+        claude::live::FetchError::Unavailable => backoff,
+    }
 }
 
 fn now_epoch() -> i64 {
@@ -245,8 +257,10 @@ fn check_current_helper() -> DoctorCheck {
 /// Say whether the Claude window is the real quota or a local estimate. This is
 /// the check to read when the bar's percentage disagrees with `/usage`.
 fn check_claude_live() -> DoctorCheck {
-    match zellij_cockpit::claude::live::fetch_session() {
-        Some(w) => DoctorCheck::ok(
+    use zellij_cockpit::claude::live::{self, FetchError};
+
+    match live::fetch_session() {
+        Ok(w) => DoctorCheck::ok(
             "claude quota",
             format!(
                 "live: 5h window {:.0}% used, resets in {:.0}m",
@@ -254,7 +268,12 @@ fn check_claude_live() -> DoctorCheck {
                 w.remaining_min(now_epoch())
             ),
         ),
-        None => DoctorCheck::warn(
+        Err(FetchError::RateLimited) => DoctorCheck::warn(
+            "claude quota",
+            "rate limited by the usage endpoint right now; the bar backs off and shows the \
+             time-elapsed estimate (no percentage) until it clears",
+        ),
+        Err(FetchError::Unavailable) => DoctorCheck::warn(
             "claude quota",
             "no live quota (not logged in, offline, or token expired); \
              the window falls back to a time-elapsed estimate and shows no percentage",
@@ -446,15 +465,15 @@ fn cached_usage(live: bool) -> CachedUsage {
         let expired = now - cache.live_at >= LIVE_TTL;
         if (expired || reset_passed) && now >= cache.live_retry_at {
             match claude::live::fetch_session() {
-                Some(window) => {
+                Ok(window) => {
                     cache.live_used_frac = Some(window.used_frac);
                     cache.live_resets_at = Some(window.resets_at);
                     cache.live_at = now;
                     cache.live_retry_at = 0;
                     cache.live_failures = 0;
                 }
-                None => {
-                    cache.live_retry_at = now + backoff_secs(cache.live_failures);
+                Err(err) => {
+                    cache.live_retry_at = now + backoff_secs(cache.live_failures, err);
                     cache.live_failures = cache.live_failures.saturating_add(1);
                 }
             }
@@ -541,12 +560,23 @@ mod tests {
 
     #[test]
     fn backoff_doubles_per_failure_and_is_capped() {
-        assert_eq!(backoff_secs(0), LIVE_BACKOFF_BASE);
-        assert_eq!(backoff_secs(1), LIVE_BACKOFF_BASE * 2);
-        assert_eq!(backoff_secs(2), LIVE_BACKOFF_BASE * 4);
+        use claude::live::FetchError::Unavailable;
+        assert_eq!(backoff_secs(0, Unavailable), LIVE_BACKOFF_BASE);
+        assert_eq!(backoff_secs(1, Unavailable), LIVE_BACKOFF_BASE * 2);
+        assert_eq!(backoff_secs(2, Unavailable), LIVE_BACKOFF_BASE * 4);
         // Never grows without bound, and never overflows however long we fail.
-        assert_eq!(backoff_secs(4), LIVE_BACKOFF_MAX);
-        assert_eq!(backoff_secs(u32::MAX), LIVE_BACKOFF_MAX);
+        assert_eq!(backoff_secs(4, Unavailable), LIVE_BACKOFF_MAX);
+        assert_eq!(backoff_secs(u32::MAX, Unavailable), LIVE_BACKOFF_MAX);
+    }
+
+    #[test]
+    fn a_rate_limit_waits_far_longer_than_an_ordinary_failure() {
+        use claude::live::FetchError::{RateLimited, Unavailable};
+        // Even the very first 429 must not be retried on the ordinary schedule.
+        assert!(backoff_secs(0, RateLimited) > backoff_secs(0, Unavailable));
+        assert_eq!(backoff_secs(0, RateLimited), LIVE_BACKOFF_RATE_LIMITED);
+        // And repeated 429s still escalate rather than pinning to the floor.
+        assert_eq!(backoff_secs(u32::MAX, RateLimited), LIVE_BACKOFF_MAX);
     }
 
     #[test]

@@ -222,10 +222,21 @@ The reset countdown is shown either way, because that part of the estimate is so
 
 **What this costs you.** The helper reads the OAuth token Claude Code already stored (macOS
 Keychain; `~/.claude/.credentials.json` elsewhere), sends it to Anthropic, and drops it - it is
-never logged or written anywhere. The endpoint is undocumented and rate limited, so the helper
-caches a successful read for 5 minutes, backs off exponentially after a failure (5 minutes, doubling to at most an hour), and
-discards a window older than 20 minutes rather than present stale quota as current. The countdown
-stays exact between fetches because the absolute reset time is what gets cached.
+never logged or written anywhere.
+
+The endpoint is undocumented and **rate limits hard**: a handful of requests in a few minutes is
+enough to trip it, and it then stays tripped for a long time. Being locked out is worse than being
+slightly stale, since a lockout costs the percentage entirely. So the helper polls it slowly and
+gives up quickly:
+
+- a successful read is cached for **10 minutes** (six requests an hour, however fast the bar ticks)
+- a `429` waits at least **30 minutes** before trying again
+- any other failure backs off from 5 minutes, doubling to at most an hour
+- a window older than **30 minutes** is discarded rather than presented as current
+
+The countdown stays exact between fetches regardless, because what gets cached is the absolute
+reset time, not a duration. Staleness therefore only ever affects the percentage, and only by
+minutes.
 
 Set `live "false"` to switch all of this off: no credentials are read, no request is made, and the
 window falls back to the estimate. `just doctor` reports which one you are getting.

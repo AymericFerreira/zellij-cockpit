@@ -67,23 +67,41 @@ impl RawWindow {
     }
 }
 
-/// Fetch the real 5-hour session window, or `None` if it can't be had for any
-/// reason - no credentials, no network, expired token, rate limited, or a payload
-/// we don't recognize.
-pub fn fetch_session() -> Option<Window> {
-    let token = access_token()?;
+/// Why a live read failed. Worth distinguishing: being rate limited is a request
+/// to stop asking, and deserves a much longer wait than a laptop that is merely
+/// offline for a moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchError {
+    /// HTTP 429. Observed to persist for a long time once tripped.
+    RateLimited,
+    /// No credentials, no network, expired token, or a payload we don't know.
+    Unavailable,
+}
 
-    let mut response = ureq::get(USAGE_URL)
+/// Fetch the real 5-hour session window.
+pub fn fetch_session() -> Result<Window, FetchError> {
+    let token = access_token().ok_or(FetchError::Unavailable)?;
+
+    let response = ureq::get(USAGE_URL)
         .config()
         .timeout_global(Some(TIMEOUT))
         .build()
         .header("Authorization", format!("Bearer {token}"))
         .header("anthropic-beta", "oauth-2025-04-20")
-        .call()
-        .ok()?;
+        .call();
 
-    let body: UsageResponse = response.body_mut().read_json().ok()?;
-    body.five_hour?.into_window()
+    let mut response = match response {
+        Ok(response) => response,
+        Err(ureq::Error::StatusCode(429)) => return Err(FetchError::RateLimited),
+        Err(_) => return Err(FetchError::Unavailable),
+    };
+
+    response
+        .body_mut()
+        .read_json::<UsageResponse>()
+        .ok()
+        .and_then(|body| body.five_hour?.into_window())
+        .ok_or(FetchError::Unavailable)
 }
 
 /// The OAuth access token Claude Code stored when you logged in.
