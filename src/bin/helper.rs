@@ -127,11 +127,12 @@ fn run_doctor() -> i32 {
 
 fn doctor_checks() -> Vec<DoctorCheck> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let mut checks = Vec::new();
-
-    checks.push(check_current_helper());
-    checks.push(check_cache_writable(&cache_path()));
-    checks.push(check_command_on_path("zellij"));
+    let mut checks = vec![
+        check_current_helper(),
+        check_cache_writable(&cache_path()),
+        check_command_on_path("zellij"),
+        check_memory(),
+    ];
 
     match &home {
         Some(home) => {
@@ -174,6 +175,49 @@ fn check_current_helper() -> DoctorCheck {
         Ok(path) => DoctorCheck::fail("helper", format!("{} does not exist", path.display())),
         Err(err) => DoctorCheck::fail("helper", format!("could not resolve current exe: {err}")),
     }
+}
+
+/// Report what the bar will actually display for memory, and which signal colors
+/// it. Memory is the one metric whose meaning is platform-dependent, so this is
+/// the check to read when the MEM or SWAP segment looks wrong.
+fn check_memory() -> DoctorCheck {
+    let mut sys = System::new();
+    let mut mem = MemUsage::default();
+    mem.update(&mut sys);
+
+    if mem.total == 0 {
+        return DoctorCheck::fail("memory", "total memory reported as 0");
+    }
+
+    let gb = |bytes: u64| bytes as f64 / 1e9;
+    let used_pct = mem.used as f64 / mem.total as f64 * 100.0;
+
+    let swap = if mem.swap_total == 0 {
+        "no swap configured (SWAP segment hidden)".to_string()
+    } else {
+        format!(
+            "swap {:.1}/{:.1}G used",
+            gb(mem.swap_used),
+            gb(mem.swap_total)
+        )
+    };
+
+    // Where pressure exists it colors MEM; elsewhere used/total does, which is
+    // the right signal on Linux because `used` there already excludes the
+    // reclaimable page cache.
+    let coloring = match mem.pressure {
+        Some(p) => format!("pressure {p:.0}% (colors MEM)"),
+        None => "no pressure signal on this platform; MEM colored by used/total".to_string(),
+    };
+
+    DoctorCheck::ok(
+        "memory",
+        format!(
+            "{:.1}/{:.1}G used ({used_pct:.0}%), {swap}, {coloring}",
+            gb(mem.used),
+            gb(mem.total)
+        ),
+    )
 }
 
 fn check_cache_writable(path: &Path) -> DoctorCheck {

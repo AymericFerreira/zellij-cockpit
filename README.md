@@ -80,6 +80,33 @@ On first run, Zellij prompts to grant the plugin **RunCommands** and
 **ReadApplicationState** permissions — accept them, or the helper can't run and the
 plugin can't map panes to tabs for attention icons.
 
+### Platform support
+
+Works on macOS and on Linux, including **WSL2** (Debian and friends). The only metric whose
+meaning is platform-dependent is memory:
+
+| Platform | What colors MEM | SWAP |
+|----------|-----------------|------|
+| macOS | **Memory pressure** (`vm_stat`: wired + compressor pages) | shown |
+| Linux / WSL2 | **used / total** against `mem_warn` / `mem_crit` | shown when the system has swap |
+
+macOS *needs* pressure because its "used" figure counts reclaimable caches. Linux does not have
+that problem: there, used is `MemTotal - MemAvailable`, which already excludes the page cache, so
+used/total is a truthful signal on its own and is what colors MEM.
+
+On WSL2, every number describes the **WSL VM**, not Windows: the memory total is what WSL was
+given, not your machine's RAM. WSL2 configures a swap file by default, so SWAP shows up; if you
+set `swap=0` in `.wslconfig`, the segment hides itself.
+
+Building on Debian additionally needs a C linker for the native helper:
+
+```bash
+sudo apt install build-essential
+rustup target add wasm32-wasip1
+just install
+just doctor        # prints exactly what the bar will show for CPU/MEM/SWAP
+```
+
 ### Reloading after a change
 
 You don't need to restart Zellij or kill your session.
