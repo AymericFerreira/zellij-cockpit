@@ -70,13 +70,16 @@ impl ZellijPlugin for State {
             .and_then(|s| s.parse().ok())
             .unwrap_or(3.0);
 
+        self.display = DisplayConfig::from_map(&configuration);
+
         let helper_path = configuration
             .get("helper")
             .cloned()
             .unwrap_or_else(|| "$HOME/.config/zellij/plugins/cockpit-helper".to_string());
-        self.helper_cmd = format!("exec \"{helper_path}\"");
-
-        self.display = DisplayConfig::from_map(&configuration);
+        // `live "false"` has to reach the helper: it is the helper, not the
+        // plugin, that reads credentials and talks to the network.
+        let offline = if self.display.live { "" } else { " --no-live" };
+        self.helper_cmd = format!("exec \"{helper_path}\"{offline}");
 
         // RunCommands: spawn the helper. ReadApplicationState: receive
         // TabUpdate/PaneUpdate (without it we never learn the tabs or which
@@ -361,37 +364,49 @@ fn provider_segments(label: &str, u: &ProviderUsage, display: &DisplayConfig) ->
         segs.push(usage_parts.join(" · "));
     }
 
-    // Bar + percent show how full the window is (time elapsed for Claude, real
-    // quota used for Codex); the text shows time until it resets. The percent is
-    // color-coded so it's obvious when you're close to the limit (red ≥ 80%).
+    // The rate-limit window. When the provider tells us the real quota used, the
+    // bar and percent mean exactly that, color-coded so it's obvious when you're
+    // close to the limit.
+    //
+    // When it doesn't, all we know locally is how much of the window has
+    // *elapsed* - which says nothing about how much quota is left. So we show no
+    // percentage at all and dim the bar: an estimate rendered like a quota reads
+    // as "72% used" when the truth might be 12%. The reset time stays, because
+    // that part of the estimate is sound.
     if display.show_window && u.block_active {
-        let pct = u.block_elapsed_frac * 100.0;
         let thresholds = &display.thresholds;
+        let pct = u.block_elapsed_frac * 100.0;
         let mut window_parts = Vec::new();
         if display.show_provider_labels && !has_usage_segment {
             window_parts.push(format!("{}", label.bright_black()));
         }
         window_parts.push(format!("{}", "5h".bright_black()));
-        window_parts.push(format!(
-            "{}",
-            usage_color(
-                bar5(u.block_elapsed_frac),
-                pct,
-                thresholds.window_warn,
-                thresholds.window_crit
-            )
-        ));
-        if display.show_percent {
+
+        if u.block_is_quota {
             window_parts.push(format!(
                 "{}",
                 usage_color(
-                    format!("{pct:.0}%"),
+                    bar5(u.block_elapsed_frac),
                     pct,
                     thresholds.window_warn,
                     thresholds.window_crit
                 )
             ));
+            if display.show_percent {
+                window_parts.push(format!(
+                    "{}",
+                    usage_color(
+                        format!("{pct:.0}%"),
+                        pct,
+                        thresholds.window_warn,
+                        thresholds.window_crit
+                    )
+                ));
+            }
+        } else {
+            window_parts.push(format!("{}", bar5(u.block_elapsed_frac).bright_black()));
         }
+
         window_parts.push(format!(
             "{}",
             format!("{} left", human_duration(u.block_remaining_min)).bright_black()

@@ -47,8 +47,16 @@ pub struct ProviderUsage {
     pub block_cost: f64,
     /// Tokens accrued in the active window.
     pub block_tokens: u64,
-    /// Fraction (0..1) of the window that has elapsed.
+    /// Fraction (0..1) driving the window bar.
+    ///
+    /// Its meaning depends on `block_is_quota`, and the two are not
+    /// interchangeable: a window can be 72% elapsed while only 12% of the quota
+    /// is spent. Read `block_is_quota` before showing this as a percentage.
     pub block_elapsed_frac: f64,
+    /// True when `block_elapsed_frac` is real quota used, as reported by the
+    /// provider. False when it is merely how much of the window has elapsed,
+    /// which is a guess about time and says nothing about quota.
+    pub block_is_quota: bool,
     /// Minutes remaining until the active window resets.
     pub block_remaining_min: f64,
 }

@@ -26,6 +26,7 @@ pub fn current_usage() -> crate::types::ProviderUsage {
         let remaining_secs = rl.resets_at - now.timestamp();
         if remaining_secs > 0 {
             usage.block_active = true;
+            usage.block_is_quota = true;
             usage.block_elapsed_frac = (rl.used_percent / 100.0).clamp(0.0, 1.0);
             usage.block_remaining_min = remaining_secs as f64 / 60.0;
         }

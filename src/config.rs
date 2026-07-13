@@ -34,6 +34,9 @@ pub struct DisplayConfig {
     pub show_tokens: bool,
     pub show_window: bool,
     pub show_percent: bool,
+    /// Ask the provider for the real rate-limit numbers instead of estimating
+    /// them from local logs. Turning this off keeps the helper fully offline.
+    pub live: bool,
     pub show_provider_labels: bool,
     pub glyphs: Glyphs,
     pub thresholds: Thresholds,
@@ -61,6 +64,7 @@ impl DisplayConfig {
                 show_tokens: false,
                 show_window: true,
                 show_percent: true,
+                live: true,
                 show_provider_labels: true,
                 glyphs: Glyphs::default(),
                 thresholds: Thresholds::default(),
@@ -77,6 +81,7 @@ impl DisplayConfig {
                 show_tokens: true,
                 show_window: true,
                 show_percent: true,
+                live: true,
                 show_provider_labels: true,
                 glyphs: Glyphs::default(),
                 thresholds: Thresholds::default(),
@@ -93,6 +98,7 @@ impl DisplayConfig {
                 show_tokens: true,
                 show_window: true,
                 show_percent: true,
+                live: true,
                 show_provider_labels: true,
                 glyphs: Glyphs::default(),
                 thresholds: Thresholds::default(),
@@ -109,6 +115,7 @@ impl DisplayConfig {
         display.show_tokens = bool_key(config, "tokens", display.show_tokens);
         display.show_window = bool_key(config, "window", display.show_window);
         display.show_percent = bool_key(config, "percent", display.show_percent);
+        display.live = bool_key(config, "live", display.live);
         display.show_provider_labels =
             bool_key(config, "provider_labels", display.show_provider_labels);
 
@@ -309,6 +316,12 @@ mod tests {
         ]));
         assert!(!cfg.show_swap);
         assert!(!cfg.show_pressure);
+    }
+
+    #[test]
+    fn live_quota_is_on_by_default_and_can_be_turned_off() {
+        assert!(DisplayConfig::default().live);
+        assert!(!DisplayConfig::from_map(&map(&[("live", "false")])).live);
     }
 
     #[test]

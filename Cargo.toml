@@ -24,9 +24,10 @@ colored = { version = "3.0.0", optional = true }
 sysinfo = { version = "0.37.2", optional = true }
 chrono = { version = "0.4", optional = true }
 walkdir = { version = "2", optional = true }
+ureq = { version = "3.3.0", default-features = false, features = ["rustls", "json"], optional = true }
 
 [features]
-native = ["sysinfo", "chrono", "walkdir"]
+native = ["sysinfo", "chrono", "walkdir", "ureq"]
 plugin = ["zellij-tile", "colored"]
 
 [[bin]]

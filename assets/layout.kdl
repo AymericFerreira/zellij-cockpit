@@ -19,6 +19,9 @@ default_tab_template {
             // pressure "true" // show the macOS memory-pressure bar next to MEM (default: only in the "full" preset).
                               // Pressure colors the MEM number regardless of this toggle.
             // swap_crit_gb "4" // swap thresholds are gigabytes, not percentages
+            // live "true"    // ask Anthropic for the real 5h quota (default true).
+                              // "false" keeps the helper fully offline: no credentials read, no
+                              // network, and the window falls back to a time-elapsed estimate.
             // ascii "false"  // true uses ~ / ! / + attention glyphs
             // glyph_waiting "!"
             // window_crit "80"

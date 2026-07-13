@@ -25,8 +25,10 @@ tab-bar row, so it costs no extra vertical space.
   Activity Monitor graphs, and swap is what tells you the machine is actually paging to disk.
 - **Per coding agent** (Claude and Codex, each toggleable — see Config):
   - **today** — estimated list-price cost ($) and tokens since local midnight
-  - **window** — a bar plus time until the rate-limit window resets. For Codex this uses its
-    real `rate_limits` (actual % used + exact reset); for Claude it's the 5-hour rolling block.
+  - **window** — the real rate-limit quota: percent actually used and the exact reset time,
+    the same numbers Claude Code's `/usage` and Codex's own limits report. If the real quota
+    can't be fetched, the bar shows the window **without a percentage** rather than guess (see
+    [Rate-limit window](#rate-limit-window)).
 - **Display presets** (`compact`, `balanced`, `full`) plus configurable glyphs,
   ASCII-safe icons, segment toggles, and color thresholds.
 
@@ -98,13 +100,14 @@ On WSL2, every number describes the **WSL VM**, not Windows: the memory total is
 given, not your machine's RAM. WSL2 configures a swap file by default, so SWAP shows up; if you
 set `swap=0` in `.wslconfig`, the segment hides itself.
 
-Building on Debian additionally needs a C linker for the native helper:
+Building on Debian additionally needs a C toolchain — to link the native helper, and to build the
+TLS backend behind the live rate-limit lookup:
 
 ```bash
 sudo apt install build-essential
 rustup target add wasm32-wasip1
 just install
-just doctor        # prints exactly what the bar will show for CPU/MEM/SWAP
+just doctor        # prints exactly what the bar will show, including CPU/MEM/SWAP and the quota
 ```
 
 ### Reloading after a change
@@ -153,6 +156,7 @@ Any explicit toggle overrides the preset:
 | `cpu`, `mem`, `swap` | show or hide system segments |
 | `pressure` | show the memory-pressure bar and percentage next to MEM (macOS). Pressure colors the MEM number either way; this only controls whether the number itself is drawn |
 | `cost`, `tokens`, `window`, `percent`, `provider_labels` | show or hide provider segment details |
+| `live` | fetch the real rate-limit quota (default `true`). `false` keeps the helper offline: no credentials read, no network, window falls back to an estimate. See [Rate-limit window](#rate-limit-window) |
 
 The SWAP segment is hidden on systems with no swap configured.
 Where memory pressure is unavailable (everything but macOS), MEM falls back to being colored
@@ -195,6 +199,36 @@ glyph_waiting "!"
 glyph_done "ok"
 window_crit "90"
 ```
+
+## Rate-limit window
+
+The percentage in the `5h` segment is **quota actually used**, fetched from the provider - not a
+guess. For Claude it comes from `GET /api/oauth/usage`, the same endpoint behind Claude Code's
+`/usage` command; for Codex it comes from the `rate_limits` its session logs already record.
+
+This matters because the obvious local substitute is wrong. From the logs alone you can only tell
+how much of the 5-hour window has *elapsed*, and elapsed time is not spent quota: a window can be
+72% elapsed while you have used 12% of it. Showing that as "72%" reads like you are nearly out
+when you are barely started.
+
+So when the real quota is unavailable, the bar **shows no percentage at all** and dims the bar:
+
+```
+Claude · $4.21 · 312k | 5h ▓░░░░ 14% 4h05m left   ← real quota, colored
+Claude · $4.21 · 312k | 5h ▓▓▓▓░ 4h05m left       ← estimate: bar dimmed, no percentage
+```
+
+The reset countdown is shown either way, because that part of the estimate is sound.
+
+**What this costs you.** The helper reads the OAuth token Claude Code already stored (macOS
+Keychain; `~/.claude/.credentials.json` elsewhere), sends it to Anthropic, and drops it - it is
+never logged or written anywhere. The endpoint is undocumented and rate limited, so the helper
+caches a successful read for 5 minutes, backs off exponentially after a failure (5 minutes, doubling to at most an hour), and
+discards a window older than 20 minutes rather than present stale quota as current. The countdown
+stays exact between fetches because the absolute reset time is what gets cached.
+
+Set `live "false"` to switch all of this off: no credentials are read, no request is made, and the
+window falls back to the estimate. `just doctor` reports which one you are getting.
 
 ## Pricing
 
