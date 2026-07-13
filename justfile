@@ -33,7 +33,26 @@ install: build-all
 uninstall:
     rm -f "{{plugins_dir}}/zellij-cockpit.wasm" "{{plugins_dir}}/cockpit-helper"
 
+# Rebuild + install, then hot-reload the bar in the running zellij session (no restart).
+#
+# `config` MUST match the plugin block in your layout, e.g. `just reload preset=full,interval=2`.
+# Zellij keys a plugin instance by url *and* configuration: with a mismatched config it does not
+# recognize the running bar, and opens the plugin in a new pane instead of reloading it.
+#
+# The helper needs no reload - the plugin re-spawns it every tick, so `just install` alone is
+# enough for helper-only changes to appear on the next refresh.
+[group("run")]
+reload config="": install
+    zellij action start-or-reload-plugin {{ if config == "" { "" } else { "-c " + config } }} "file:{{plugins_dir}}/zellij-cockpit.wasm"
+    @echo ""
+    @echo "Reloaded the bar in this session."
+
 # Print the metrics line the plugin consumes (for debugging the helper).
 [group("run")]
 helper:
     cargo run --release --bin cockpit-helper --features native
+
+# Check local install/config prerequisites without starting zellij.
+[group("run")]
+doctor:
+    cargo run --release --bin cockpit-helper --features native -- doctor

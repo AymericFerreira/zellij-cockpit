@@ -10,8 +10,18 @@ default_tab_template {
             // Optional config:
             // interval "3"   // seconds between metric refreshes
             // helper "$HOME/.config/zellij/plugins/cockpit-helper"
+            // preset "balanced" // compact | balanced | full
             // claude "true"  // show Claude usage (default true)
             // codex  "true"  // show Codex usage (default true; appears once ~/.codex has logs)
+            // cost "true"    // explicit toggles override the preset
+            // tokens "true"
+            // swap "true"    // show swap used (default true; hidden when the system has no swap)
+            // pressure "true" // show the macOS memory-pressure bar next to MEM (default: only in the "full" preset).
+                              // Pressure colors the MEM number regardless of this toggle.
+            // swap_crit_gb "4" // swap thresholds are gigabytes, not percentages
+            // ascii "false"  // true uses ~ / ! / + attention glyphs
+            // glyph_waiting "!"
+            // window_crit "80"
         }
     }
     children

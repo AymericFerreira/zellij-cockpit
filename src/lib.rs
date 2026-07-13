@@ -6,6 +6,8 @@
 
 pub mod types;
 
+pub mod config;
+
 #[cfg(feature = "native")]
 pub mod usage;
 

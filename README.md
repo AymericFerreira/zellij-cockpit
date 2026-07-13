@@ -5,8 +5,8 @@ usage (Claude Code and/or Codex CLI), and per-tab attention icons — in the sin
 tab-bar row, so it costs no extra vertical space.
 
 ```
- 1 edit ●  2 build ◐  3 logs ✓   CPU 12%  MEM 9.4/16G  Claude $4.21·312k  5h ▓▓▓░░ 2h09m left  Codex $0.01·27k  5h ▓░░░ 3h25m left
- └──────── tabs + attention ──────┘   └────────────────────── system + per-agent usage ──────────────────────┘
+ 1 edit ●  2 build ◐  3 logs ✓   CPU 12%  MEM 9.4/16G  SWAP 0  Claude $4.21·312k  5h ▓▓▓░░ 2h09m left  Codex $0.01·27k  5h ▓░░░ 3h25m left
+ └──────── tabs + attention ──────┘   └───────────────────────── system + per-agent usage ─────────────────────────┘
   legend:  ● needs you    ◐ working    ✓ done    (no icon = idle)
 ```
 
@@ -18,10 +18,17 @@ tab-bar row, so it costs no extra vertical space.
   - `✓` done — Claude finished
   - the icon clears when you focus the tab
 - **CPU %** and **Memory** (used/total), color-coded by load
+- **Swap** used, and on macOS the **memory pressure** that colors the MEM number.
+  Used memory is a poor health signal on a Mac: the kernel keeps caches and compressible
+  pages resident, so "used" sits near total even when everything is fine.
+  Pressure measures the memory the kernel *cannot* reclaim cheaply, which is what
+  Activity Monitor graphs, and swap is what tells you the machine is actually paging to disk.
 - **Per coding agent** (Claude and Codex, each toggleable — see Config):
   - **today** — estimated list-price cost ($) and tokens since local midnight
   - **window** — a bar plus time until the rate-limit window resets. For Codex this uses its
     real `rate_limits` (actual % used + exact reset); for Claude it's the 5-hour rolling block.
+- **Display presets** (`compact`, `balanced`, `full`) plus configurable glyphs,
+  ASCII-safe icons, segment toggles, and color thresholds.
 
 A provider is shown only when it's enabled *and* has data, so you get Claude-only, Codex-only,
 or both. When the terminal is narrow, the right-hand segments drop one at a time so the tabs
@@ -73,19 +80,94 @@ On first run, Zellij prompts to grant the plugin **RunCommands** and
 **ReadApplicationState** permissions — accept them, or the helper can't run and the
 plugin can't map panes to tabs for attention icons.
 
+### Reloading after a change
+
+You don't need to restart Zellij or kill your session.
+
+```bash
+just reload                          # layout's plugin block has no config keys
+just reload preset=full,interval=2   # layout's plugin block sets preset/interval
+```
+
+This rebuilds, installs, and hot-swaps the bar in place: same session, same panes, new code.
+
+The `config` argument **must match the plugin block in your layout**. Zellij identifies a running
+plugin by its url *and* its configuration, so if the config doesn't match it won't recognize the
+bar that's already running and will open the plugin in a **new pane** instead of reloading it.
+(If that happens, just close the stray pane.)
+
+Changes to the **helper** alone need no reload at all: the plugin re-spawns it on every tick, so
+`just install` is enough and the new numbers appear on the next refresh.
+
 ## Configuration
 
 Optional keys in the plugin block (see `assets/layout.kdl`):
 
-| Key        | Default                                          | Meaning                              |
-|------------|--------------------------------------------------|--------------------------------------|
-| `interval` | `3`                                              | seconds between metric refreshes     |
-| `helper`   | `$HOME/.config/zellij/plugins/cockpit-helper`    | path to the helper binary            |
-| `claude`   | `true`                                           | show Claude usage                    |
-| `codex`    | `true`                                           | show Codex usage (when `~/.codex` has logs) |
+| Key        | Default                                       | Meaning                              |
+|------------|-----------------------------------------------|--------------------------------------|
+| `interval` | `3`                                           | seconds between metric refreshes     |
+| `helper`   | `$HOME/.config/zellij/plugins/cockpit-helper` | path to the helper binary            |
+| `preset`   | `balanced`                                    | `compact`, `balanced`, or `full`     |
+| `claude`   | `true`                                        | show Claude usage                    |
+| `codex`    | `true`                                        | show Codex usage (when `~/.codex` has logs) |
+
+Preset defaults:
+
+| Preset     | Behavior |
+|------------|----------|
+| `compact`  | CPU/MEM/SWAP plus provider rate-limit windows; hides cost and token totals |
+| `balanced` | current default: CPU/MEM/SWAP, cost, tokens, window bar, percent, provider labels |
+| `full`     | everything `balanced` shows, plus the memory-pressure bar and percentage next to MEM |
+
+Any explicit toggle overrides the preset:
+
+| Toggle | Meaning |
+|--------|---------|
+| `cpu`, `mem`, `swap` | show or hide system segments |
+| `pressure` | show the memory-pressure bar and percentage next to MEM (macOS). Pressure colors the MEM number either way; this only controls whether the number itself is drawn |
+| `cost`, `tokens`, `window`, `percent`, `provider_labels` | show or hide provider segment details |
+
+The SWAP segment is hidden on systems with no swap configured.
+Where memory pressure is unavailable (everything but macOS), MEM falls back to being colored
+by used/total against `mem_warn` / `mem_crit`.
+
+Booleans accept `true/false`, `1/0`, `yes/no`, and `on/off`.
+
+Glyph and threshold keys:
+
+| Key | Meaning |
+|-----|---------|
+| `ascii` | use ASCII-safe default attention glyphs (`~`, `!`, `+`) |
+| `glyph_working`, `glyph_waiting`, `glyph_done` | override attention glyphs |
+| `cpu_warn`, `cpu_crit`, `mem_warn`, `mem_crit`, `window_warn`, `window_crit` | warning/critical percentages |
+| `pressure_warn`, `pressure_crit` | memory-pressure percentages that color MEM on macOS (default `50` / `75`) |
+| `swap_warn_gb`, `swap_crit_gb` | swap thresholds in **gigabytes**, not percent (default `1` / `4`). macOS grows its swap file on demand, so a percentage of total swap means nothing |
 
 The layout also keeps zellij's built-in `status-bar` (keybinding hints) at the bottom — see
 [`assets/layout.kdl`](assets/layout.kdl).
+
+Examples:
+
+```kdl
+// Minimal and portable.
+preset "compact"
+ascii "true"
+```
+
+```kdl
+// Keep the default density but hide money.
+preset "balanced"
+cost "false"
+```
+
+```kdl
+// Explicit high-detail layout with custom attention markers.
+preset "full"
+glyph_working "..."
+glyph_waiting "!"
+glyph_done "ok"
+window_crit "90"
+```
 
 ## Pricing
 
@@ -100,6 +182,8 @@ them there when prices change.
 
 - **No metrics / blank right side** — run `just helper` (or `cockpit-helper`) directly; it should
   print one JSON line. If not, check the helper path in your plugin config.
+- **Install/config uncertainty** — run `just doctor`; it checks the helper, cache
+  directory, Zellij on PATH, installed plugin files, Claude settings, and local agent logs.
 - **Attention icons never appear** — confirm the hooks are in `~/.claude/settings.json` and that
   `zellij` is on PATH inside Claude Code. Test manually:
   `zellij pipe --name "cockpit::attention::waiting::$ZELLIJ_PANE_ID"`.

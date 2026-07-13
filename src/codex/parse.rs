@@ -91,10 +91,9 @@ fn parse_file<R: BufRead>(
             .and_then(|p| p.get("model"))
             .or_else(|| v.get("model"))
             .and_then(Value::as_str)
+            && !m.is_empty()
         {
-            if !m.is_empty() {
-                current_model = m.to_string();
-            }
+            current_model = m.to_string();
         }
 
         let Some(ts) = v
@@ -112,19 +111,18 @@ fn parse_file<R: BufRead>(
         if let Some(primary) = payload
             .and_then(|p| p.get("rate_limits"))
             .and_then(|r| r.get("primary"))
-        {
-            if let (Some(used_percent), Some(resets_at)) = (
+            && let (Some(used_percent), Some(resets_at)) = (
                 primary.get("used_percent").and_then(Value::as_f64),
                 primary.get("resets_at").and_then(Value::as_i64),
-            ) {
-                let newer = latest_rl.as_ref().map(|r| ts > r.at).unwrap_or(true);
-                if newer {
-                    *latest_rl = Some(RateLimit {
-                        used_percent,
-                        resets_at,
-                        at: ts,
-                    });
-                }
+            )
+        {
+            let newer = latest_rl.as_ref().map(|r| ts > r.at).unwrap_or(true);
+            if newer {
+                *latest_rl = Some(RateLimit {
+                    used_percent,
+                    resets_at,
+                    at: ts,
+                });
             }
         }
 
@@ -160,17 +158,16 @@ fn parse_file<R: BufRead>(
         }
     }
 
-    if !produced_delta {
-        if let Some((t, ts, model, cumulative)) = max_total {
-            if !t.is_zero() {
-                out.push(Entry {
-                    timestamp: ts,
-                    tokens: t.display_total(),
-                    cost: pricing::cost(&model, &t),
-                    dedup_key: Some(format!("{session}:{cumulative}")),
-                });
-            }
-        }
+    if !produced_delta
+        && let Some((t, ts, model, cumulative)) = max_total
+        && !t.is_zero()
+    {
+        out.push(Entry {
+            timestamp: ts,
+            tokens: t.display_total(),
+            cost: pricing::cost(&model, &t),
+            dedup_key: Some(format!("{session}:{cumulative}")),
+        });
     }
 }
 

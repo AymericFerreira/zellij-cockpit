@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use colored::Colorize;
 use zellij_tile::prelude::*;
 
+use zellij_cockpit::config::{DisplayConfig, Glyphs};
 use zellij_cockpit::types::{Metrics, ProviderUsage};
 
 /// Per-tab attention state, set by Claude Code hooks.
@@ -34,11 +35,11 @@ impl Attn {
         }
     }
 
-    fn glyph(self) -> String {
+    fn glyph(self, glyphs: &Glyphs) -> String {
         match self {
-            Attn::Working => format!("{}", "◐".yellow()),
-            Attn::Waiting => format!("{}", "●".bright_red()),
-            Attn::Done => format!("{}", "✓".bright_green()),
+            Attn::Working => format!("{}", glyphs.working.yellow()),
+            Attn::Waiting => format!("{}", glyphs.waiting.bright_red()),
+            Attn::Done => format!("{}", glyphs.done.bright_green()),
         }
     }
 }
@@ -55,9 +56,7 @@ struct State {
     /// sh -c argument that runs the helper; default resolves $HOME at runtime.
     helper_cmd: String,
     got_perms: bool,
-    /// Which providers' usage to display (config: `claude` / `codex`).
-    show_claude: bool,
-    show_codex: bool,
+    display: DisplayConfig,
 }
 
 register_plugin!(State);
@@ -77,22 +76,7 @@ impl ZellijPlugin for State {
             .unwrap_or_else(|| "$HOME/.config/zellij/plugins/cockpit-helper".to_string());
         self.helper_cmd = format!("exec \"{helper_path}\"");
 
-        // Per-provider toggles (default on). Set `claude false` / `codex false`
-        // in the plugin's KDL config to hide one. Only explicit false-y spellings
-        // hide a provider; anything else (or absent) stays on.
-        let flag = |key: &str| {
-            configuration
-                .get(key)
-                .map(|s| {
-                    !matches!(
-                        s.trim().to_ascii_lowercase().as_str(),
-                        "false" | "0" | "no" | "off" | ""
-                    )
-                })
-                .unwrap_or(true)
-        };
-        self.show_claude = flag("claude");
-        self.show_codex = flag("codex");
+        self.display = DisplayConfig::from_map(&configuration);
 
         // RunCommands: spawn the helper. ReadApplicationState: receive
         // TabUpdate/PaneUpdate (without it we never learn the tabs or which
@@ -249,8 +233,12 @@ impl State {
                     "{}",
                     format!(" {} ", tab.name).black().on_green().bold()
                 ));
-            } else if let Some(a) = self.attention.get(&tab.position) {
-                parts.push(format!(" {} {} ", tab.name.bold(), a.glyph()));
+            } else if let Some(attn) = self.attention.get(&tab.position) {
+                parts.push(format!(
+                    " {} {} ",
+                    tab.name.bold(),
+                    attn.glyph(&self.display.glyphs)
+                ));
             } else {
                 parts.push(format!(" {} ", tab.name.bold()));
             }
@@ -262,67 +250,153 @@ impl State {
         let m = &self.metrics;
         let mut segs = Vec::new();
 
-        // CPU
-        let cpu = m.cpu as f64;
-        segs.push(format!(
-            "{} {}",
-            "CPU".bright_black(),
-            usage_color(format!("{cpu:.0}%"), cpu, 50.0, 80.0)
-        ));
+        let thresholds = &self.display.thresholds;
 
-        // MEM
-        let used_g = m.mem_used as f64 / 1e9;
-        let total_g = m.mem_total as f64 / 1e9;
-        let mem_pct = if m.mem_total > 0 {
-            m.mem_used as f64 / m.mem_total as f64 * 100.0
-        } else {
-            0.0
-        };
-        segs.push(format!(
-            "{} {}",
-            "MEM".bright_black(),
-            usage_color(format!("{used_g:.1}/{total_g:.0}G"), mem_pct, 60.0, 80.0)
-        ));
+        if self.display.show_cpu {
+            let cpu = m.cpu as f64;
+            segs.push(format!(
+                "{} {}",
+                "CPU".bright_black(),
+                usage_color(
+                    format!("{cpu:.0}%"),
+                    cpu,
+                    thresholds.cpu_warn,
+                    thresholds.cpu_crit
+                )
+            ));
+        }
+
+        if self.display.show_mem {
+            let used_g = m.mem_used as f64 / 1e9;
+            let total_g = m.mem_total as f64 / 1e9;
+            let used_pct = if m.mem_total > 0 {
+                m.mem_used as f64 / m.mem_total as f64 * 100.0
+            } else {
+                0.0
+            };
+
+            // Where pressure is available (macOS) it decides the color: used
+            // memory sits near total on a healthy Mac because the kernel keeps
+            // reclaimable pages resident, so coloring by used/total would show
+            // red all day. Elsewhere, used/total is the best signal we have.
+            let (level, warn, crit) = match m.mem_pressure {
+                Some(p) => (p as f64, thresholds.pressure_warn, thresholds.pressure_crit),
+                None => (used_pct, thresholds.mem_warn, thresholds.mem_crit),
+            };
+
+            let mut mem_parts = vec![
+                format!("{}", "MEM".bright_black()),
+                format!(
+                    "{}",
+                    usage_color(format!("{used_g:.1}/{total_g:.0}G"), level, warn, crit)
+                ),
+            ];
+            // Pressure gets the bar+percent idiom the rate-limit window uses, so
+            // it reads as its own quantity: a bare "66%" next to "15.5/19G" would
+            // look like the used-memory percentage, which is the exact confusion
+            // pressure exists to clear up.
+            if self.display.show_pressure
+                && let Some(p) = m.mem_pressure
+            {
+                let frac = f64::from(p) / 100.0;
+                mem_parts.push(format!("{}", usage_color(bar5(frac), level, warn, crit)));
+                mem_parts.push(format!(
+                    "{}",
+                    usage_color(format!("{p:.0}%"), level, warn, crit)
+                ));
+            }
+            segs.push(mem_parts.join(" "));
+        }
+
+        // Swap is the signal that memory is actually hurting: a Mac happily runs
+        // with memory "full", but sustained swap means paging to disk.
+        if self.display.show_swap && m.swap_total > 0 {
+            let used_g = m.swap_used as f64 / 1e9;
+            segs.push(format!(
+                "{} {}",
+                "SWAP".bright_black(),
+                usage_color(
+                    human_bytes(m.swap_used),
+                    used_g,
+                    thresholds.swap_warn_gb,
+                    thresholds.swap_crit_gb
+                )
+            ));
+        }
 
         // Per-provider usage (each only if enabled and it actually has data).
-        if self.show_claude {
-            segs.extend(provider_segments("Claude", &m.claude));
+        if self.display.show_claude {
+            segs.extend(provider_segments("Claude", &m.claude, &self.display));
         }
-        if self.show_codex {
-            segs.extend(provider_segments("Codex", &m.codex));
+        if self.display.show_codex {
+            segs.extend(provider_segments("Codex", &m.codex, &self.display));
         }
 
         segs
     }
 }
 
-/// Build the segments for one provider: `<label> $cost · tokens` and, if a
-/// window is active, `5h <bar> <time> left`.
-fn provider_segments(label: &str, u: &ProviderUsage) -> Vec<String> {
+/// Build the segments for one provider from the configured display toggles.
+fn provider_segments(label: &str, u: &ProviderUsage, display: &DisplayConfig) -> Vec<String> {
     let mut segs = Vec::new();
     if !u.present {
         return segs;
     }
 
-    segs.push(format!(
-        "{} {} · {}",
-        label.bright_black(),
-        format!("${:.2}", u.today_cost).bright_green(),
-        human_tokens(u.today_tokens)
-    ));
+    let mut usage_parts = Vec::new();
+    if display.show_provider_labels {
+        usage_parts.push(format!("{}", label.bright_black()));
+    }
+    if display.show_cost {
+        usage_parts.push(format!(
+            "{}",
+            format!("${:.2}", u.today_cost).bright_green()
+        ));
+    }
+    if display.show_tokens {
+        usage_parts.push(human_tokens(u.today_tokens));
+    }
+    let has_usage_segment = usage_parts.len() > usize::from(display.show_provider_labels);
+    if has_usage_segment {
+        segs.push(usage_parts.join(" · "));
+    }
 
     // Bar + percent show how full the window is (time elapsed for Claude, real
     // quota used for Codex); the text shows time until it resets. The percent is
     // color-coded so it's obvious when you're close to the limit (red ≥ 80%).
-    if u.block_active {
+    if display.show_window && u.block_active {
         let pct = u.block_elapsed_frac * 100.0;
-        segs.push(format!(
-            "{} {} {} {}",
-            "5h".bright_black(),
-            usage_color(bar5(u.block_elapsed_frac), pct, 60.0, 80.0),
-            usage_color(format!("{pct:.0}%"), pct, 60.0, 80.0),
+        let thresholds = &display.thresholds;
+        let mut window_parts = Vec::new();
+        if display.show_provider_labels && !has_usage_segment {
+            window_parts.push(format!("{}", label.bright_black()));
+        }
+        window_parts.push(format!("{}", "5h".bright_black()));
+        window_parts.push(format!(
+            "{}",
+            usage_color(
+                bar5(u.block_elapsed_frac),
+                pct,
+                thresholds.window_warn,
+                thresholds.window_crit
+            )
+        ));
+        if display.show_percent {
+            window_parts.push(format!(
+                "{}",
+                usage_color(
+                    format!("{pct:.0}%"),
+                    pct,
+                    thresholds.window_warn,
+                    thresholds.window_crit
+                )
+            ));
+        }
+        window_parts.push(format!(
+            "{}",
             format!("{} left", human_duration(u.block_remaining_min)).bright_black()
         ));
+        segs.push(window_parts.join(" "));
     }
 
     segs
@@ -355,6 +429,20 @@ fn human_duration(minutes: f64) -> String {
         format!("{h}h{m:02}m")
     } else {
         format!("{m}m")
+    }
+}
+
+/// Byte counts for the swap segment: "0", "512M", "4.2G".
+fn human_bytes(n: u64) -> String {
+    let g = n as f64 / 1e9;
+    if g >= 1.0 {
+        format!("{g:.1}G")
+    } else if n >= 1_000_000 {
+        format!("{:.0}M", n as f64 / 1e6)
+    } else if n == 0 {
+        "0".to_string()
+    } else {
+        format!("{:.0}K", n as f64 / 1e3)
     }
 }
 

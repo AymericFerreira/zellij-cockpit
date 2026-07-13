@@ -17,6 +17,13 @@ pub struct Metrics {
     pub mem_used: u64,
     /// Total memory in bytes.
     pub mem_total: u64,
+    /// Used swap in bytes.
+    pub swap_used: u64,
+    /// Total swap in bytes (macOS grows this file dynamically, so it moves).
+    pub swap_total: u64,
+    /// macOS memory pressure, 0..100. `None` where the platform has no such
+    /// notion, in which case the bar falls back to coloring by used/total.
+    pub mem_pressure: Option<f32>,
     /// Claude Code usage (from `~/.claude`).
     pub claude: ProviderUsage,
     /// Codex CLI usage (from `~/.codex`).

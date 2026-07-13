@@ -48,12 +48,11 @@ where
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
             continue;
         }
-        if let Ok(meta) = entry.metadata() {
-            if let Ok(modified) = meta.modified() {
-                if modified < cutoff {
-                    continue;
-                }
-            }
+        if let Ok(meta) = entry.metadata()
+            && let Ok(modified) = meta.modified()
+            && modified < cutoff
+        {
+            continue;
         }
         if let Ok(file) = File::open(path) {
             handle(path, BufReader::new(file));
@@ -115,16 +114,17 @@ pub fn summarize(
         last_ts = Some(e.timestamp);
     }
 
-    if let Some(bs) = block_start {
-        if now >= bs && now - bs < window {
-            let elapsed = now - bs;
-            usage.block_active = true;
-            usage.block_cost = block_cost;
-            usage.block_tokens = block_tokens;
-            usage.block_elapsed_frac =
-                (elapsed.num_seconds() as f64 / window.num_seconds() as f64).clamp(0.0, 1.0);
-            usage.block_remaining_min = ((window - elapsed).num_seconds().max(0) as f64) / 60.0;
-        }
+    if let Some(bs) = block_start
+        && now >= bs
+        && now - bs < window
+    {
+        let elapsed = now - bs;
+        usage.block_active = true;
+        usage.block_cost = block_cost;
+        usage.block_tokens = block_tokens;
+        usage.block_elapsed_frac =
+            (elapsed.num_seconds() as f64 / window.num_seconds() as f64).clamp(0.0, 1.0);
+        usage.block_remaining_min = ((window - elapsed).num_seconds().max(0) as f64) / 60.0;
     }
 
     usage
