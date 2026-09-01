@@ -23,15 +23,17 @@ install: build-all
     mkdir -p "{{plugins_dir}}"
     cp target/wasm32-wasip1/release/zellij-cockpit.wasm "{{plugins_dir}}/"
     cp target/release/cockpit-helper "{{plugins_dir}}/"
+    cp assets/cockpit-shell.sh "{{plugins_dir}}/"
     @echo ""
     @echo "Installed plugin + helper to {{plugins_dir}}"
     @echo "Next:"
     @echo "  1. Add the default_tab_template from assets/layout.kdl to your zellij config/layout."
     @echo "  2. Merge assets/cockpit-hooks.json into ~/.claude/settings.json (keep your existing hooks)."
+    @echo "  3. Source cockpit-shell.sh from your ~/.zshrc or ~/.bashrc for the running-command marker."
 
 [group("install")]
 uninstall:
-    rm -f "{{plugins_dir}}/zellij-cockpit.wasm" "{{plugins_dir}}/cockpit-helper"
+    rm -f "{{plugins_dir}}/zellij-cockpit.wasm" "{{plugins_dir}}/cockpit-helper" "{{plugins_dir}}/cockpit-shell.sh"
 
 # Rebuild + install, then hot-reload the bar in the running zellij session (no restart).
 #

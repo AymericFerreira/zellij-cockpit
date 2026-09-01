@@ -8,6 +8,9 @@
 //!   * attention (push): Claude Code hooks send `zellij pipe --name
 //!     "cockpit::attention::<state>::$ZELLIJ_PANE_ID"`; the name is parsed here,
 //!     the pane is mapped to its tab, and that tab gets an icon until focused.
+//!   * activity (push): shell hooks send `zellij pipe --name
+//!     "cockpit::activity::<start|end>::$ZELLIJ_PANE_ID::<era>::<seq>"` around
+//!     every foreground command, so a tab can say "a command is running here".
 
 use std::collections::BTreeMap;
 
@@ -44,6 +47,23 @@ impl Attn {
     }
 }
 
+/// A pane running a foreground shell command, as reported by the shell hooks.
+#[derive(Clone, Copy)]
+struct Activity {
+    /// Which shell is talking: its start time. A pane has one shell at a time,
+    /// so a different era simply means a new shell, and whatever it says is the
+    /// truth - we never compare eras. Comparing them would let one bad value
+    /// (a clock jump, a stray test message) silence the pane for good.
+    era: u64,
+    /// That shell's command counter. The hooks fire in the background, so pipes
+    /// from the same shell can arrive out of order; an older seq is dropped.
+    seq: u64,
+    running: bool,
+    /// Only shown once it has survived a Timer tick. Commands that finish
+    /// inside one tick never draw, so the bar doesn't flicker on every `ls`.
+    shown: bool,
+}
+
 #[derive(Default)]
 struct State {
     metrics: Metrics,
@@ -52,6 +72,8 @@ struct State {
     attention: BTreeMap<usize, Attn>,
     /// terminal pane id -> tab position (from PaneManifest).
     pane_to_tab: BTreeMap<u32, usize>,
+    /// terminal pane id -> foreground-command state, set by the shell hooks.
+    activity: BTreeMap<u32, Activity>,
     interval: f64,
     /// sh -c argument that runs the helper; default resolves $HOME at runtime.
     helper_cmd: String,
@@ -119,7 +141,15 @@ impl ZellijPlugin for State {
             Event::Timer(_) => {
                 self.fetch();
                 set_timeout(self.interval);
-                false
+                // A command still running one tick later is worth showing.
+                let mut changed = false;
+                for act in self.activity.values_mut() {
+                    if act.running && !act.shown {
+                        act.shown = true;
+                        changed = true;
+                    }
+                }
+                changed
             }
             Event::RunCommandResult(_code, stdout, _stderr, _ctx) => {
                 if let Ok(text) = String::from_utf8(stdout)
@@ -148,6 +178,9 @@ impl ZellijPlugin for State {
                         }
                     }
                 }
+                // A pane that closed mid-command must not leave its tab marked.
+                self.activity
+                    .retain(|id, _| self.pane_to_tab.contains_key(id));
                 false
             }
             _ => false,
@@ -155,6 +188,9 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, message: PipeMessage) -> bool {
+        if let Some(rest) = message.name.strip_prefix("cockpit::activity::") {
+            return self.activity_pipe(rest);
+        }
         // Hooks broadcast via `zellij pipe --name`, so the payload is the name.
         let Some(rest) = message.name.strip_prefix("cockpit::attention::") else {
             return false;
@@ -215,6 +251,62 @@ impl ZellijPlugin for State {
 }
 
 impl State {
+    /// Handle `<start|end>::<pane_id>::<era>::<seq>` from the shell hooks, or
+    /// `reset`, which drops every marker (an escape hatch for a stuck bar).
+    fn activity_pipe(&mut self, rest: &str) -> bool {
+        if rest.trim() == "reset" {
+            let had_marker = self.activity.values().any(|a| a.running && a.shown);
+            self.activity.clear();
+            return had_marker;
+        }
+
+        let mut parts = rest.split("::");
+        let (Some(state), Some(pane_id), Some(era), Some(seq)) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return false;
+        };
+        let (Ok(pane_id), Ok(era), Ok(seq)) = (
+            pane_id.trim().parse::<u32>(),
+            era.trim().parse::<u64>(),
+            seq.trim().parse::<u64>(),
+        ) else {
+            return false;
+        };
+        let running = match state {
+            "start" => true,
+            "end" => false,
+            _ => return false,
+        };
+
+        // Within one shell, a late pipe from an older command must not
+        // resurrect it. Across shells, the newcomer always wins.
+        let previous = self.activity.get(&pane_id).copied();
+        if previous.is_some_and(|p| p.era == era && seq < p.seq) {
+            return false;
+        }
+        let was_shown = previous.is_some_and(|p| p.running && p.shown);
+        self.activity.insert(
+            pane_id,
+            Activity {
+                era,
+                seq,
+                running,
+                shown: false,
+            },
+        );
+        // Starting draws nothing yet (the Timer decides); ending has to repaint
+        // if the marker was up.
+        was_shown && !running
+    }
+
+    /// Is a command running in any pane of this tab?
+    fn tab_is_busy(&self, tab: usize) -> bool {
+        self.activity
+            .iter()
+            .any(|(pane, act)| act.running && act.shown && self.pane_to_tab.get(pane) == Some(&tab))
+    }
+
     fn fetch(&self) {
         if !self.got_perms {
             return;
@@ -229,21 +321,29 @@ impl State {
     fn render_tabs(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         for tab in &self.tabs {
+            // Unlike attention, a running command still matters on the tab you
+            // are looking at: it says the command has not finished yet.
+            let busy = self.display.show_activity && self.tab_is_busy(tab.position);
+            let running = &self.display.glyphs.running;
             if tab.active {
                 // Active tab: a clear highlighted chip. Attention is auto-cleared
                 // on the focused tab, so the active tab never carries an icon.
-                parts.push(format!(
-                    "{}",
-                    format!(" {} ", tab.name).black().on_green().bold()
-                ));
-            } else if let Some(attn) = self.attention.get(&tab.position) {
-                parts.push(format!(
-                    " {} {} ",
-                    tab.name.bold(),
-                    attn.glyph(&self.display.glyphs)
-                ));
+                let label = if busy {
+                    format!(" {} {running} ", tab.name)
+                } else {
+                    format!(" {} ", tab.name)
+                };
+                parts.push(format!("{}", label.black().on_green().bold()));
             } else {
-                parts.push(format!(" {} ", tab.name.bold()));
+                let mut chip = format!(" {}", tab.name.bold());
+                if busy {
+                    chip.push_str(&format!(" {}", running.bright_cyan()));
+                }
+                if let Some(attn) = self.attention.get(&tab.position) {
+                    chip.push_str(&format!(" {}", attn.glyph(&self.display.glyphs)));
+                }
+                chip.push(' ');
+                parts.push(chip);
             }
         }
         parts.join("")

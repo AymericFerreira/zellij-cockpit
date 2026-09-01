@@ -38,6 +38,9 @@ pub struct DisplayConfig {
     /// them from local logs. Turning this off keeps the helper fully offline.
     pub live: bool,
     pub show_provider_labels: bool,
+    /// Show a marker on tabs where a shell command is running (fed by the
+    /// shell hooks in `assets/cockpit-shell.sh`).
+    pub show_activity: bool,
     pub glyphs: Glyphs,
     pub thresholds: Thresholds,
 }
@@ -66,6 +69,7 @@ impl DisplayConfig {
                 show_percent: true,
                 live: true,
                 show_provider_labels: true,
+                show_activity: true,
                 glyphs: Glyphs::default(),
                 thresholds: Thresholds::default(),
             },
@@ -83,6 +87,7 @@ impl DisplayConfig {
                 show_percent: true,
                 live: true,
                 show_provider_labels: true,
+                show_activity: true,
                 glyphs: Glyphs::default(),
                 thresholds: Thresholds::default(),
             },
@@ -100,6 +105,7 @@ impl DisplayConfig {
                 show_percent: true,
                 live: true,
                 show_provider_labels: true,
+                show_activity: true,
                 glyphs: Glyphs::default(),
                 thresholds: Thresholds::default(),
             },
@@ -118,6 +124,7 @@ impl DisplayConfig {
         display.live = bool_key(config, "live", display.live);
         display.show_provider_labels =
             bool_key(config, "provider_labels", display.show_provider_labels);
+        display.show_activity = bool_key(config, "activity", display.show_activity);
 
         let ascii = bool_key(config, "ascii", false);
         display.glyphs = Glyphs::from_map(config, ascii);
@@ -131,6 +138,8 @@ pub struct Glyphs {
     pub working: String,
     pub waiting: String,
     pub done: String,
+    /// Marks a tab where a shell command is running.
+    pub running: String,
 }
 
 impl Default for Glyphs {
@@ -139,6 +148,7 @@ impl Default for Glyphs {
             working: "◐".to_string(),
             waiting: "●".to_string(),
             done: "✓".to_string(),
+            running: "▶".to_string(),
         }
     }
 }
@@ -150,6 +160,7 @@ impl Glyphs {
                 working: "~".to_string(),
                 waiting: "!".to_string(),
                 done: "+".to_string(),
+                running: ">".to_string(),
             }
         } else {
             Self::default()
@@ -164,6 +175,10 @@ impl Glyphs {
                 .cloned()
                 .unwrap_or(defaults.waiting),
             done: config.get("glyph_done").cloned().unwrap_or(defaults.done),
+            running: config
+                .get("glyph_running")
+                .cloned()
+                .unwrap_or(defaults.running),
         }
     }
 }
@@ -331,6 +346,21 @@ mod tests {
         assert_eq!(cfg.thresholds.pressure_crit, 75.0);
         assert_eq!(cfg.thresholds.swap_crit_gb, 8.0);
         assert_eq!(cfg.thresholds.swap_warn_gb, 1.0);
+    }
+
+    #[test]
+    fn activity_marker_is_on_by_default_and_can_be_turned_off() {
+        assert!(DisplayConfig::default().show_activity);
+        assert_eq!(DisplayConfig::default().glyphs.running, "▶");
+        assert!(!DisplayConfig::from_map(&map(&[("activity", "off")])).show_activity);
+        let cfg = DisplayConfig::from_map(&map(&[("ascii", "true"), ("glyph_running", "RUN")]));
+        assert_eq!(cfg.glyphs.running, "RUN");
+        assert_eq!(
+            DisplayConfig::from_map(&map(&[("ascii", "true")]))
+                .glyphs
+                .running,
+            ">"
+        );
     }
 
     #[test]
