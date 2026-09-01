@@ -5,9 +5,9 @@ usage (Claude Code and/or Codex CLI), and per-tab attention icons — in the sin
 tab-bar row, so it costs no extra vertical space.
 
 ```
- 1 edit ●  2 build ◐  3 logs ✓   CPU 12%  MEM 9.4/16G  SWAP 0  Claude $4.21·312k  5h ▓▓▓░░ 2h09m left  Codex $0.01·27k  5h ▓░░░ 3h25m left
+ 1 edit ●  2 build ▶ ◐  3 logs ✓   CPU 12%  MEM 9.4/16G  SWAP 0  Claude $4.21·312k  5h ▓▓▓░░ 2h09m left  Codex $0.01·27k  5h ▓░░░ 3h25m left
  └──────── tabs + attention ──────┘   └───────────────────────── system + per-agent usage ─────────────────────────┘
-  legend:  ● needs you    ◐ working    ✓ done    (no icon = idle)
+  legend:  ● needs you    ◐ working    ✓ done    ▶ command running    (no icon = idle)
 ```
 
 ## What it shows
@@ -17,6 +17,8 @@ tab-bar row, so it costs no extra vertical space.
   - `●` needs you — Claude is waiting for input/permission
   - `✓` done — Claude finished
   - the icon clears when you focus the tab
+  - `▶` a shell command is running in a pane on that tab.
+    This one stays on the tab you are looking at: it tells you the command has not finished yet.
 - **CPU %** and **Memory** (used/total), color-coded by load
 - **Swap** used, and on macOS the **memory pressure** that colors the MEM number.
   Used memory is a poor health signal on a Mac: the kernel keeps caches and compressible
@@ -46,6 +48,7 @@ No long-running daemon and no lock files. Two pieces:
  └──────────────┬─────────────────────────────────┘
    Timer ~3s →  │ run_command("cockpit-helper")        ← system + Claude metrics, as JSON
    pipe      ←  │ "cockpit::attention::<state>::<pane>" ← from Claude Code hooks
+   pipe      ←  │ "cockpit::activity::<start|end>::…"   ← from shell preexec/precmd
 ```
 
 - **`cockpit-helper`** (native binary) reads CPU/MEM via `sysinfo` and computes per-agent
@@ -56,7 +59,38 @@ No long-running daemon and no lock files. Two pieces:
   It's short-lived — the plugin runs it on a timer; the log scans are cached for ~30s.
   The today/window aggregation is shared (`src/usage.rs`); each agent just parses its own logs.
 - **`zellij-cockpit.wasm`** (the plugin) renders the row, polls the helper, and listens for
-  attention pipes sent by Claude Code hooks.
+  attention and activity pipes sent by Claude Code hooks and by your shell.
+
+### Running-command marker
+
+Zellij's plugin API does not expose what a pane is running, so the shell has to say it.
+`assets/cockpit-shell.sh` hooks `preexec` and `precmd` (zsh) or `DEBUG` and `PROMPT_COMMAND`
+(bash) and fires one `zellij pipe` around each foreground command. The pipe runs in the
+background, so your prompt never waits on it.
+
+The pipe is sent with stdin on `/dev/null`. `zellij pipe` reads stdin for its payload, and a
+background process that reads the terminal is stopped with `SIGTTIN`, so without that redirect
+the message never arrives.
+
+Two details keep the marker honest:
+
+- **No flicker.** A command only draws the marker if it is still running at the next refresh
+  (~3s). `ls` and `cd` never show up.
+- **No stuck marker.** Background pipes can arrive out of order, so each message carries the
+  shell's start time (its *era*) and a command counter. Within one era the bar ignores an older
+  counter. A *different* era just means a new shell in that pane, and the bar believes it
+  whatever the value - eras are never compared. That matters: if the bar ranked eras, one bad
+  value (a clock jump, a stray message) would make every later message look old and silence the
+  pane for good. If a pane closes mid-command, its tab drops the marker on the next pane update.
+
+If a marker ever gets stuck anyway, clear every one of them by hand:
+
+```sh
+zellij pipe --name "cockpit::activity::reset" </dev/null
+```
+
+The marker only covers commands the shell itself starts. Something launched inside a full-screen
+program - a build from inside your editor, for example - is invisible to it.
 
 ## Build & install
 
@@ -77,6 +111,16 @@ This builds both binaries and copies them to `~/.config/zellij/plugins/`
 2. **Enable attention hooks.** Merge [`assets/cockpit-hooks.json`](assets/cockpit-hooks.json)
    into `~/.claude/settings.json` (merge — don't overwrite any hooks you already have). The
    hooks fire `zellij pipe` on `UserPromptSubmit` / `Notification` / `Stop`.
+
+3. **Enable the running-command marker.** Source the shell integration from your
+   `~/.zshrc` (zsh) or `~/.bashrc` (bash):
+
+   ```sh
+   [ -f ~/.config/zellij/plugins/cockpit-shell.sh ] && . ~/.config/zellij/plugins/cockpit-shell.sh
+   ```
+
+   `just install` copies that file next to the plugin. See
+   [Running-command marker](#running-command-marker).
 
 On first run, Zellij prompts to grant the plugin **RunCommands** and
 **ReadApplicationState** permissions — accept them, or the helper can't run and the
@@ -156,6 +200,7 @@ Any explicit toggle overrides the preset:
 | `cpu`, `mem`, `swap` | show or hide system segments |
 | `pressure` | show the memory-pressure bar and percentage next to MEM (macOS). Pressure colors the MEM number either way; this only controls whether the number itself is drawn |
 | `cost`, `tokens`, `window`, `percent`, `provider_labels` | show or hide provider segment details |
+| `activity` | show the running-command marker on tabs (default `true`) |
 | `live` | fetch the real rate-limit quota (default `true`). `false` keeps the helper offline: no credentials read, no network, window falls back to an estimate. See [Rate-limit window](#rate-limit-window) |
 
 The SWAP segment is hidden on systems with no swap configured.
@@ -168,8 +213,9 @@ Glyph and threshold keys:
 
 | Key | Meaning |
 |-----|---------|
-| `ascii` | use ASCII-safe default attention glyphs (`~`, `!`, `+`) |
+| `ascii` | use ASCII-safe default glyphs (`~`, `!`, `+`, `>`) |
 | `glyph_working`, `glyph_waiting`, `glyph_done` | override attention glyphs |
+| `glyph_running` | override the running-command marker (default `▶`, `>` with `ascii`) |
 | `cpu_warn`, `cpu_crit`, `mem_warn`, `mem_crit`, `window_warn`, `window_crit` | warning/critical percentages |
 | `pressure_warn`, `pressure_crit` | memory-pressure percentages that color MEM on macOS (default `50` / `75`) |
 | `swap_warn_gb`, `swap_crit_gb` | swap thresholds in **gigabytes**, not percent (default `1` / `4`). macOS grows its swap file on demand, so a percentage of total swap means nothing |
