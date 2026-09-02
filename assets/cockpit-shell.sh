@@ -37,9 +37,50 @@ if [ -n "$ZELLIJ" ] && [ -n "$ZELLIJ_PANE_ID" ] && [ -n "$_cockpit_interactive" 
       </dev/null >/dev/null 2>&1 & )
   }
 
+  # Commands that never mark the tab. A coding agent is one foreground command
+  # that runs for hours, so it would keep its tab marked the whole session - and
+  # the bar already says what those are doing, with their own attention icons.
+  # Override with COCKPIT_SKIP="claude codex vim" before sourcing this file.
+  COCKPIT_SKIP="${COCKPIT_SKIP:-claude codex}"
+
+  # The command word, past anything that only wraps it: leading VAR=value
+  # assignments and runners like sudo or nohup. `sudo claude` is still claude.
+  _cockpit_command_word() {
+    _cw_rest=$1
+    while [ -n "$_cw_rest" ]; do
+      _cw_word=${_cw_rest%% *}
+      case "$_cw_word" in
+        *=*) ;;
+        sudo | command | exec | nohup | time | env | doas) ;;
+        *)
+          printf '%s' "${_cw_word##*/}"
+          return 0
+          ;;
+      esac
+      case "$_cw_rest" in
+        *" "*) _cw_rest=${_cw_rest#* } ;;
+        *) _cw_rest="" ;;
+      esac
+    done
+    return 0
+  }
+
+  _cockpit_skipped() {
+    case " $COCKPIT_SKIP " in
+      *" $(_cockpit_command_word "$1") "*) return 0 ;;
+    esac
+    return 1
+  }
+
+  # A skipped command still sends "end": that clears any marker left over from
+  # whatever ran before it, so the tab is honest either way.
   _cockpit_start() {
     _COCKPIT_SEQ=$((_COCKPIT_SEQ + 1))
-    _cockpit_activity start
+    if _cockpit_skipped "$1"; then
+      _cockpit_activity end
+    else
+      _cockpit_activity start
+    fi
   }
 
   _cockpit_end() {
@@ -49,6 +90,7 @@ if [ -n "$ZELLIJ" ] && [ -n "$ZELLIJ_PANE_ID" ] && [ -n "$_cockpit_interactive" 
 
   if [ -n "$ZSH_VERSION" ]; then
     autoload -Uz add-zsh-hook
+    # preexec gets the command line as typed in $1.
     add-zsh-hook preexec _cockpit_start
     add-zsh-hook precmd _cockpit_end
   elif [ -n "$BASH_VERSION" ]; then
@@ -60,7 +102,7 @@ if [ -n "$ZELLIJ" ] && [ -n "$ZELLIJ_PANE_ID" ] && [ -n "$_cockpit_interactive" 
       esac
       [ -n "$_COCKPIT_IN_PROMPT" ] && return 0
       _COCKPIT_IN_PROMPT=1
-      _cockpit_start
+      _cockpit_start "$BASH_COMMAND"
     }
     _cockpit_prompt() {
       [ -n "$_COCKPIT_IN_PROMPT" ] && _cockpit_end

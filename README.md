@@ -89,6 +89,19 @@ If a marker ever gets stuck anyway, clear every one of them by hand:
 zellij pipe --name "cockpit::activity::reset" </dev/null
 ```
 
+**Coding agents are skipped.** `claude` and `codex` never mark a tab: an agent session is one
+foreground command that runs for hours, so it would keep its tab marked the whole time, and the
+bar already reports those with their own attention icons. The check looks at the command word you
+typed, past leading `VAR=value` assignments and wrappers like `sudo`, so `sudo claude` is skipped
+too. Set your own list before sourcing the file:
+
+```sh
+COCKPIT_SKIP="claude codex aider vim"
+```
+
+If you launch an agent through an alias of your own (`cc`, say), add that alias to the list - the
+check sees the word you typed, not what it expands to.
+
 The marker only covers commands the shell itself starts. Something launched inside a full-screen
 program - a build from inside your editor, for example - is invisible to it.
 
