@@ -17,6 +17,16 @@ build-plugin:
 test:
     cargo test --features native
 
+# The shell hooks, in real zsh and bash under a pty. Slower (a few minutes): it
+# drives interactive shells with a stub `zellij` and reads back what they sent.
+# SHELLS=bash just test-shell runs one shell.
+[group("test")]
+test-shell:
+    sh tests/shell_hooks.sh
+
+[group("test")]
+test-all: test test-shell
+
 # Build, then copy the wasm plugin and native helper into the zellij plugins dir.
 [group("install")]
 install: build-all

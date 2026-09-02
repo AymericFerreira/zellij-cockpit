@@ -108,6 +108,9 @@ if [ -n "$ZELLIJ" ] && [ -n "$ZELLIJ_PANE_ID" ] && [ -n "$_cockpit_interactive" 
       [ -n "$_COCKPIT_IN_PROMPT" ] && _cockpit_end
       _COCKPIT_IN_PROMPT=""
     }
+    # Set before the trap: the rest of this file is itself made of commands, and
+    # DEBUG fires for them too. The first prompt clears the flag.
+    _COCKPIT_IN_PROMPT=1
     trap '_cockpit_debug' DEBUG
     case "$PROMPT_COMMAND" in
       *_cockpit_prompt*) ;;

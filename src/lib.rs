@@ -8,6 +8,13 @@ pub mod types;
 
 pub mod config;
 
+/// The tab strip and the running-command marker. Native so it can be tested
+/// without a WASM host; the plugin feeds it plain data.
+pub mod bar;
+
+/// Which panes are running a foreground shell command.
+pub mod activity;
+
 #[cfg(feature = "native")]
 pub mod usage;
 

@@ -17,52 +17,10 @@ use std::collections::BTreeMap;
 use colored::Colorize;
 use zellij_tile::prelude::*;
 
-use zellij_cockpit::config::{DisplayConfig, Glyphs};
+use zellij_cockpit::activity::{self, Tracker};
+use zellij_cockpit::bar::{Attn, TabView, render_tabs, visible_len};
+use zellij_cockpit::config::DisplayConfig;
 use zellij_cockpit::types::{Metrics, ProviderUsage};
-
-/// Per-tab attention state, set by Claude Code hooks.
-#[derive(Clone, Copy)]
-enum Attn {
-    Working,
-    Waiting,
-    Done,
-}
-
-impl Attn {
-    fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "working" => Some(Attn::Working),
-            "waiting" => Some(Attn::Waiting),
-            "done" => Some(Attn::Done),
-            _ => None,
-        }
-    }
-
-    fn glyph(self, glyphs: &Glyphs) -> String {
-        match self {
-            Attn::Working => format!("{}", glyphs.working.yellow()),
-            Attn::Waiting => format!("{}", glyphs.waiting.bright_red()),
-            Attn::Done => format!("{}", glyphs.done.bright_green()),
-        }
-    }
-}
-
-/// A pane running a foreground shell command, as reported by the shell hooks.
-#[derive(Clone, Copy)]
-struct Activity {
-    /// Which shell is talking: its start time. A pane has one shell at a time,
-    /// so a different era simply means a new shell, and whatever it says is the
-    /// truth - we never compare eras. Comparing them would let one bad value
-    /// (a clock jump, a stray test message) silence the pane for good.
-    era: u64,
-    /// That shell's command counter. The hooks fire in the background, so pipes
-    /// from the same shell can arrive out of order; an older seq is dropped.
-    seq: u64,
-    running: bool,
-    /// Only shown once it has survived a Timer tick. Commands that finish
-    /// inside one tick never draw, so the bar doesn't flicker on every `ls`.
-    shown: bool,
-}
 
 #[derive(Default)]
 struct State {
@@ -72,8 +30,8 @@ struct State {
     attention: BTreeMap<usize, Attn>,
     /// terminal pane id -> tab position (from PaneManifest).
     pane_to_tab: BTreeMap<u32, usize>,
-    /// terminal pane id -> foreground-command state, set by the shell hooks.
-    activity: BTreeMap<u32, Activity>,
+    /// Which panes are running a foreground shell command.
+    activity: Tracker,
     interval: f64,
     /// sh -c argument that runs the helper; default resolves $HOME at runtime.
     helper_cmd: String,
@@ -142,14 +100,7 @@ impl ZellijPlugin for State {
                 self.fetch();
                 set_timeout(self.interval);
                 // A command still running one tick later is worth showing.
-                let mut changed = false;
-                for act in self.activity.values_mut() {
-                    if act.running && !act.shown {
-                        act.shown = true;
-                        changed = true;
-                    }
-                }
-                changed
+                self.activity.tick()
             }
             Event::RunCommandResult(_code, stdout, _stderr, _ctx) => {
                 if let Ok(text) = String::from_utf8(stdout)
@@ -179,8 +130,8 @@ impl ZellijPlugin for State {
                     }
                 }
                 // A pane that closed mid-command must not leave its tab marked.
-                self.activity
-                    .retain(|id, _| self.pane_to_tab.contains_key(id));
+                let known = &self.pane_to_tab;
+                self.activity.retain_panes(|pane| known.contains_key(&pane));
                 false
             }
             _ => false,
@@ -199,8 +150,7 @@ impl ZellijPlugin for State {
         let (Some(state), Some(pane_id)) = (parts.next(), parts.next()) else {
             return false;
         };
-        let (Some(attn), Ok(pane_id)) = (Attn::from_str(state), pane_id.trim().parse::<u32>())
-        else {
+        let (Some(attn), Ok(pane_id)) = (Attn::parse(state), pane_id.trim().parse::<u32>()) else {
             return false;
         };
         let Some(&tab) = self.pane_to_tab.get(&pane_id) else {
@@ -251,60 +201,12 @@ impl ZellijPlugin for State {
 }
 
 impl State {
-    /// Handle `<start|end>::<pane_id>::<era>::<seq>` from the shell hooks, or
-    /// `reset`, which drops every marker (an escape hatch for a stuck bar).
+    /// Hand a `cockpit::activity::…` message to the tracker.
     fn activity_pipe(&mut self, rest: &str) -> bool {
-        if rest.trim() == "reset" {
-            let had_marker = self.activity.values().any(|a| a.running && a.shown);
-            self.activity.clear();
-            return had_marker;
+        match activity::Message::parse(rest) {
+            Some(message) => self.activity.apply(message),
+            None => false,
         }
-
-        let mut parts = rest.split("::");
-        let (Some(state), Some(pane_id), Some(era), Some(seq)) =
-            (parts.next(), parts.next(), parts.next(), parts.next())
-        else {
-            return false;
-        };
-        let (Ok(pane_id), Ok(era), Ok(seq)) = (
-            pane_id.trim().parse::<u32>(),
-            era.trim().parse::<u64>(),
-            seq.trim().parse::<u64>(),
-        ) else {
-            return false;
-        };
-        let running = match state {
-            "start" => true,
-            "end" => false,
-            _ => return false,
-        };
-
-        // Within one shell, a late pipe from an older command must not
-        // resurrect it. Across shells, the newcomer always wins.
-        let previous = self.activity.get(&pane_id).copied();
-        if previous.is_some_and(|p| p.era == era && seq < p.seq) {
-            return false;
-        }
-        let was_shown = previous.is_some_and(|p| p.running && p.shown);
-        self.activity.insert(
-            pane_id,
-            Activity {
-                era,
-                seq,
-                running,
-                shown: false,
-            },
-        );
-        // Starting draws nothing yet (the Timer decides); ending has to repaint
-        // if the marker was up.
-        was_shown && !running
-    }
-
-    /// Is a command running in any pane of this tab?
-    fn tab_is_busy(&self, tab: usize) -> bool {
-        self.activity
-            .iter()
-            .any(|(pane, act)| act.running && act.shown && self.pane_to_tab.get(pane) == Some(&tab))
     }
 
     fn fetch(&self) {
@@ -319,34 +221,22 @@ impl State {
     }
 
     fn render_tabs(&self) -> String {
-        let mut parts: Vec<String> = Vec::new();
-        for tab in &self.tabs {
-            // Unlike attention, a running command still matters on the tab you
-            // are looking at: it says the command has not finished yet.
-            let busy = self.display.show_activity && self.tab_is_busy(tab.position);
-            let running = &self.display.glyphs.running;
-            if tab.active {
-                // Active tab: a clear highlighted chip. Attention is auto-cleared
-                // on the focused tab, so the active tab never carries an icon.
-                let label = if busy {
-                    format!(" {} {running} ", tab.name)
-                } else {
-                    format!(" {} ", tab.name)
-                };
-                parts.push(format!("{}", label.black().on_green().bold()));
-            } else {
-                let mut chip = format!(" {}", tab.name.bold());
-                if busy {
-                    chip.push_str(&format!(" {}", running.bright_cyan()));
-                }
-                if let Some(attn) = self.attention.get(&tab.position) {
-                    chip.push_str(&format!(" {}", attn.glyph(&self.display.glyphs)));
-                }
-                chip.push(' ');
-                parts.push(chip);
-            }
-        }
-        parts.join("")
+        let tabs: Vec<TabView> = self
+            .tabs
+            .iter()
+            .map(|tab| TabView {
+                position: tab.position,
+                name: tab.name.clone(),
+                active: tab.active,
+            })
+            .collect();
+        render_tabs(
+            &tabs,
+            &self.attention,
+            &self.activity,
+            &self.pane_to_tab,
+            &self.display,
+        )
     }
 
     fn metric_segments(&self) -> Vec<String> {
@@ -515,24 +405,6 @@ fn provider_segments(label: &str, u: &ProviderUsage, display: &DisplayConfig) ->
     }
 
     segs
-}
-
-/// Count visible columns, skipping ANSI escape sequences (`\x1b[ … letter`).
-fn visible_len(s: &str) -> usize {
-    let mut count = 0usize;
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            for c2 in chars.by_ref() {
-                if c2.is_ascii_alphabetic() {
-                    break;
-                }
-            }
-        } else {
-            count += 1;
-        }
-    }
-    count
 }
 
 /// Format minutes as "Xh Ym" / "Ym" for the time-until-reset display.

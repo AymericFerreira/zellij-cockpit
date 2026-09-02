@@ -186,6 +186,26 @@ bar that's already running and will open the plugin in a **new pane** instead of
 Changes to the **helper** alone need no reload at all: the plugin re-spawns it on every tick, so
 `just install` is enough and the new numbers appear on the next refresh.
 
+## Tests
+
+```bash
+just test          # the library and the helper
+just test-shell    # the shell hooks, in real zsh and bash
+just test-all      # both
+```
+
+`just test` is the fast one. The parts worth knowing about:
+
+- **`src/activity.rs`** owns what a hook message means: when a marker appears, when it clears,
+  which message wins when two disagree. That logic is invisible when it breaks - a wrong state
+  draws nothing at all - so it is tested directly rather than through the bar.
+- **`src/bar.rs`** renders the tab strip. Tests assert the exact text with color turned off, so
+  " edit ▶  build " is checked the way you read it.
+- **`tests/shell_hooks.sh`** runs zsh and bash under a pty with a stub `zellij` on `PATH`, and
+  asserts the pipe names they send. The pty is the point: the hooks send their pipe in the
+  background, and a background process that reads the terminal is stopped with `SIGTTIN`. That
+  bug made the marker never appear, and without a controlling terminal a test cannot see it.
+
 ## Configuration
 
 Optional keys in the plugin block (see `assets/layout.kdl`):
