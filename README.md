@@ -194,7 +194,12 @@ just test-shell    # the shell hooks, in real zsh and bash
 just test-all      # both
 ```
 
-`just test` is the fast one. The parts worth knowing about:
+`just test` is the fast one, and it is what CI runs on every push, along with `cargo fmt
+--check`, clippy on both targets, and a build of the WASM plugin. The shell suite stays manual:
+it drives interactive shells with real timing, which is too slow and too timing-dependent to be
+a useful gate.
+
+The parts worth knowing about:
 
 - **`src/activity.rs`** owns what a hook message means: when a marker appears, when it clears,
   which message wins when two disagree. That logic is invisible when it breaks - a wrong state
