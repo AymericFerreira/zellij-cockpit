@@ -1,5 +1,7 @@
 # zellij-cockpit
 
+[![CI](https://github.com/AymericFerreira/zellij-cockpit/actions/workflows/ci.yml/badge.svg)](https://github.com/AymericFerreira/zellij-cockpit/actions/workflows/ci.yml)
+
 An all-in-one [Zellij](https://zellij.dev) **top bar**: live system load, coding-agent
 usage (Claude Code and/or Codex CLI), and per-tab attention icons — in the single
 tab-bar row, so it costs no extra vertical space.
